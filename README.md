@@ -7,6 +7,9 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 ## Structure
 
 ```
+├── CLAUDE.md               # Global instructions (symlinked to ~/.claude/CLAUDE.md)
+├── install.sh              # Interactive installer — pick components, symlink into ~/.claude/
+├── uninstall.sh            # Interactive uninstaller — restore backups or remove symlinks
 ├── hooks/                  # Event-driven shell hooks
 │   ├── format-python.sh    # PostToolUse: auto-format .py files with ruff + black
 │   └── run-tests.sh        # Stop: run pytest when Claude finishes responding
@@ -77,15 +80,14 @@ user@host:~/project (Sonnet 4.6) [████████░░ 80%]
 
 ## Installation
 
-Copy or symlink into `~/.claude/`:
+This repo is the canonical source for all Claude Code configuration. The install script symlinks selected components into `~/.claude/`, backing up any existing files first.
 
 ```bash
-# Example: symlink hooks
-ln -sf ~/claude_extensions/hooks/*.sh ~/.claude/hooks/
-ln -sf ~/claude_extensions/skills/* ~/.claude/skills/
-ln -sf ~/claude_extensions/rules/* ~/.claude/rules/
-ln -sf ~/claude_extensions/statusline-command.sh ~/.claude/statusline-command.sh
-
-# Copy and customize settings (don't symlink — you'll want local edits)
-cp ~/claude_extensions/settings.json.reference ~/.claude/settings.json
+./install.sh
 ```
+
+You'll be prompted for each component (CLAUDE.md, hooks, skills, rules, status line) — pick what you want. Existing files are backed up with a `.bak` suffix before being replaced.
+
+After installing, review `settings.json.reference` and merge the relevant sections (hook wiring, status line, plugins) into your `~/.claude/settings.json`.
+
+To uninstall, run `./uninstall.sh` — it finds symlinks pointing into this repo, lets you pick which to remove, and restores `.bak` files where they exist.
