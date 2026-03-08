@@ -45,7 +45,7 @@ This skill must only be invoked from the main session, never from a subagent.
    - Each subagent's prompt MUST include the same verbatim format template from step 2, modified to say: "Review ONLY the following changed sections: [list sections]. Read at most 3 source files relevant to the changes. Max 5 items."
    - Synthesize, present to user, apply approved fixes, increment revision.
    - **Stop condition**: a round produces **0 critical and 0 major** findings. Minor-only findings do not block — note them and declare the plan ready.
-   - **Safety valve**: max 5 total rounds (1 initial + 4 follow-ups). If critical/major issues persist after 5 rounds, STOP — report what keeps recurring and flag to the user that the plan may need structural rework rather than incremental fixes.
+   - **Safety valve**: max 7 total rounds (1 initial + 6 follow-ups). If critical/major issues persist after 7 rounds, STOP — report what keeps recurring and flag to the user that the plan may need structural rework rather than incremental fixes.
 
 6. When the stop condition is met, inform the user the review is complete and the plan is ready for implementation. Do not begin implementation unless the user explicitly requests it.
 

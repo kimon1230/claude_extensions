@@ -53,3 +53,5 @@ This skill must only be invoked from the main session, never from a subagent.
    - Test count and coverage
    - Key decisions or judgment calls made
    - Next batch ready to start (or: what blocks it)
+
+7. **Auto-save**: After completing the summary, invoke `/save` to checkpoint progress.
