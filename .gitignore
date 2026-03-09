@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+
+# IDE / editor state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# AI/LLM tool directories
+.claude/
+.cursor/
+.aider*
+.continue/
+.copilot/
+.codeium/
+.windsurf/
+.tabnine/
+.sourcegraph/
+
+# Secrets and credentials
+.env*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+credentials.json
+service-account*.json
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build / runtime artifacts
+dist/
+build/
+node_modules/
+*.egg-info/

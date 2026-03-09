@@ -11,7 +11,7 @@ declare -a COMPONENTS=(
 )
 
 # Discover hooks
-for f in "$REPO_DIR"/hooks/*.sh; do
+for f in "$REPO_DIR"/hooks/*.sh "$REPO_DIR"/hooks/*.py; do
     [ -f "$f" ] || continue
     name=$(basename "$f")
     COMPONENTS+=("Hook: $name|$f|$CLAUDE_DIR/hooks/$name")

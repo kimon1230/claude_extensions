@@ -19,12 +19,10 @@ find_project_root() {
 
 ROOT=$(find_project_root) || exit 0
 
-# Find pytest in venv or PATH
+# Find pytest in venv only — never fall back to PATH (CWE-427)
 PYTEST=""
 if [[ -x "$ROOT/.venv/bin/pytest" ]]; then
   PYTEST="$ROOT/.venv/bin/pytest"
-elif command -v pytest &>/dev/null; then
-  PYTEST="pytest"
 else
   exit 0
 fi

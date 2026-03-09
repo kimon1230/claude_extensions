@@ -14,6 +14,27 @@
             "command": "$HOME/.claude/hooks/format-python.sh"
           }
         ]
+      },
+      {
+        "matcher": "Read|Edit|Write|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/ref-scorer.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/session-init.py",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
@@ -24,6 +45,15 @@
             "command": "$HOME/.claude/hooks/run-tests.sh",
             "timeout": 120,
             "statusMessage": "Running tests..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/auto-capture.py",
+            "timeout": 10
           }
         ]
       }

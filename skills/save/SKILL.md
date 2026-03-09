@@ -24,7 +24,33 @@ This skill must only be invoked from the main session, never from a subagent.
 4. **Write/update** `~/.claude/status/<project-name>/session-progress.md` with:
    - **Timestamp**: `YYYY-MM-DD HH:MM UTC`
    - **Current task**: what you were working on
-   - **Completed**: detailed progress, not just a summary. Include:
+   - **Completed**: detailed progress using typed entries. Each entry is classified and formatted as follows:
+
+     **Entry types:**
+     - **Decision**: The change involved choosing between alternatives or a non-obvious approach. MUST include a `Why:` line.
+     - **Observation**: A factual record of what happened with no meaningful alternatives considered. Plain body, no `Why:` required.
+     - When in doubt, prefer `decision` — better to over-document rationale than lose it.
+
+     **Entry format:**
+     ```markdown
+     ### [decision] Title describing the choice <!-- id:a1b2c3d4e5f6a7b8 -->
+     Why: Rationale for this decision (SACRED — never compress or paraphrase).
+     What: Implementation details (optional).
+
+     ### [observation] Title describing what happened <!-- id:e5f6a7b8c9d0e1f2 -->
+     Plain body text describing the change.
+     ```
+
+     **Entry IDs:** Generate a unique ID for each new entry — 16 hex characters (e.g., `a1b2c3d4e5f6a7b8`). Just produce a random-looking 16-char hex string.
+
+     **Appending to existing files:** When updating an existing `session-progress.md`, preserve all existing entries verbatim — only append new ones.
+
+     **Auto-captured entries:** If a `## Auto-captured` section exists (added by the auto-capture hook), review those entries:
+     - Promote useful ones to the main **Completed** section.
+     - Upgrade observations to decisions with a `Why:` line where appropriate.
+     - Remove the `## Auto-captured` section after processing.
+
+     **Entry body content** — draw from these details as appropriate:
      - **Per-batch/phase breakdown** when following a plan — what each batch accomplished
      - **Files created, modified, or deleted** — explicit paths (e.g., `src/foo/bar.py` — added `MyClass`, refactored `process()`)
      - **Implementation specifics** — functions, classes, modules, config options added or changed

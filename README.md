@@ -7,30 +7,72 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 ## Structure
 
 ```
-├── CLAUDE.md               # Global instructions (symlinked to ~/.claude/CLAUDE.md)
-├── install.sh              # Interactive installer — pick components, symlink into ~/.claude/
-├── uninstall.sh            # Interactive uninstaller — restore backups or remove symlinks
-├── hooks/                  # Event-driven shell hooks
-│   ├── format-python.sh    # PostToolUse: auto-format .py files with ruff + black
-│   └── run-tests.sh        # Stop: run pytest when Claude finishes responding
-├── skills/                 # Custom slash-command skills (/skill-name)
-│   ├── save/               # /save — checkpoint session progress to status files
-│   ├── critical-review/    # /critical-review — parallel subagent plan review
-│   ├── implement-batch/    # /implement-batch — parallel subagent batch implementation
-│   └── security-audit/     # /security-audit — parallel subagent security review
-├── rules/                  # Language-specific coding conventions
-│   ├── python.md           # venv usage, atomic edits around hooks, pathlib, type hints
-│   ├── javascript.md       # package manager detection, ES modules, TypeScript prefs
-│   └── shell.md            # $HOME over ~, guard tool availability, pipefail
-├── statusline-command.sh   # Custom status line: user@host:cwd + model + context bar
-└── settings.json.reference # Reference settings.json for ~/.claude/settings.json
+├── CLAUDE.md                   # Global instructions (symlinked to ~/.claude/CLAUDE.md)
+├── install.sh                  # Interactive installer — pick components, symlink into ~/.claude/
+├── uninstall.sh                # Interactive uninstaller — restore backups or remove symlinks
+├── hooks/                      # Event-driven hooks (shell + Python)
+│   ├── format-python.sh        # PostToolUse: auto-format .py files with ruff + black
+│   ├── run-tests.sh            # Stop: run pytest when Claude finishes responding
+│   ├── ref-scorer.py           # PostToolUse: score status entries against tool context
+│   ├── ref_scorer_mod.py       # Importable module for ref-scorer.py
+│   ├── session-init.py         # SessionStart: increment session count, check compression triggers
+│   ├── session_init_mod.py     # Importable module for session-init.py
+│   ├── auto-capture.py         # Stop: generate entries from git diff at session end
+│   ├── auto_capture_mod.py     # Importable module for auto-capture.py
+│   └── lib/                    # Shared Python libraries (stdlib only)
+│       ├── entries.py           # Entry parsing/serialization (typed entries, section-aware)
+│       ├── fileutil.py          # Atomic writes, safe JSON read/write with .bak fallback
+│       ├── ref_tracker.py       # 3-tier reference scoring logic
+│       ├── paths.py             # Project name and status path resolution
+│       ├── scribe.py            # Git diff classification (file type detection, entry generation)
+│       └── compressor.py        # 4-tier context compression algorithm
+├── skills/                     # Custom slash-command skills (/skill-name)
+│   ├── save/                   # /save — checkpoint session progress to status files
+│   ├── compress/               # /compress — force context compression on demand
+│   ├── critical-review/        # /critical-review — parallel subagent plan review
+│   ├── implement-batch/        # /implement-batch — parallel subagent batch implementation
+│   └── security-audit/         # /security-audit — parallel subagent security review
+├── rules/                      # Language-specific coding conventions
+│   ├── python.md               # venv usage, atomic edits around hooks, pathlib, type hints
+│   ├── javascript.md           # package manager detection, ES modules, TypeScript prefs
+│   └── shell.md                # $HOME over ~, guard tool availability, pipefail
+├── tests/                      # pytest test suite (285 tests)
+├── statusline-command.sh       # Custom status line: user@host:cwd + model + context bar
+└── settings.json.reference     # Reference settings.json for ~/.claude/settings.json
 ```
 
 ## Hooks
 
 ### `format-python.sh` (PostToolUse)
 
-Runs after every `Edit` or `Write` on `.py` files. Finds `ruff` and `black` in the project's `.venv` (walking up from the edited file) or falls back to `$PATH`. Runs `ruff check --fix` first (import sorting, auto-fixes), then `black` for final formatting.
+Runs after every `Edit` or `Write` on `.py` files. Finds `ruff` and `black` in the project's `.venv` (walking up from the edited file). Skips formatting if no venv is found. Runs `ruff check --fix` first (import sorting, auto-fixes), then `black` for final formatting.
+
+### `ref-scorer.py` (PostToolUse)
+
+Runs after `Read`, `Edit`, `Write`, `Grep`, `Glob` tool uses. Scores status entries in `session-progress.md` against the tool context using 3-tier scoring:
+
+| Tier | Signal | Score |
+|------|--------|-------|
+| 1 | Exact file path match | +2 |
+| 2 | Directory overlap | +1 |
+| 3 | Keyword overlap (≥3 shared, 4+ chars) | +1 |
+
+Scores accumulate in `~/.claude/status/<project>/ref-cache.json`. Entries with high scores are "active" (relevant); entries with score 0 are "stale". Never crashes — all exceptions silently caught.
+
+### `session-init.py` (SessionStart)
+
+Runs on session startup/resume:
+1. Increments `session_count` in `ref-cache.json`
+2. Logs context summary to stderr: "Context: N entries, M active, K stale"
+3. Checks compression triggers — if any fire, auto-runs the compressor
+
+### `auto-capture.py` (Stop)
+
+Runs after Claude finishes responding. Automatically generates observation entries from uncommitted git changes:
+1. Runs `git diff --name-status` to classify changed files (test, config, source, renamed, deleted)
+2. Deduplicates against existing entries
+3. Appends new observations to a `## Auto-captured` section in `session-progress.md`
+4. `/save` later reviews and promotes these entries into the main Completed section
 
 ### `run-tests.sh` (Stop)
 
@@ -45,7 +87,8 @@ Outputs last 50 lines of test output to stderr on failure. Non-blocking (exit 1 
 
 | Skill | Trigger | Purpose |
 |---|---|---|
-| `/save` | Manual | Writes `session-progress.md` and `project-status.md` to `~/.claude/status/<project>/` |
+| `/save` | Manual | Writes `session-progress.md` and `project-status.md` to `~/.claude/status/<project>/`. Uses typed entries (decision/observation) with unique IDs. Reviews and promotes auto-captured entries. |
+| `/compress` | Manual | Forces context compression on demand, bypassing automatic trigger thresholds. Moves stale entries through tiers: Active → Compressed → Archived → Dropped. |
 | `/critical-review` | Manual | Spawns 4 parallel subagents to review a plan for correctness, edge cases, feasibility, and test coverage. Iterates until no critical/major findings. |
 | `/implement-batch` | Manual | Implements one batch of a plan using parallel subagents per module, then validates with full test suite. |
 | `/security-audit` | Manual | Spawns 5-6 parallel subagents covering OWASP categories, secrets scanning, and web-specific checks. Includes follow-up verification rounds. |
@@ -70,10 +113,38 @@ user@host:~/project (Sonnet 4.6) [████████░░ 80%]
 - Model name (with "Claude " prefix stripped for brevity)
 - Thresholds shifted +10% to compensate for underreported usage
 
+## Context Persistence
+
+The hooks and skills above form a context persistence system that helps Claude maintain awareness across sessions. The system works automatically once hooks are activated:
+
+1. **Reference scoring** (`ref-scorer.py`): Every tool use scores status entries by file path and keyword overlap, tracking which entries are actively relevant.
+2. **Auto-capture** (`auto-capture.py`): At session end, uncommitted git changes are classified and appended as observation entries.
+3. **Manual save** (`/save`): Claude writes typed entries (decisions with sacred `Why:` text, observations) and promotes auto-captured entries.
+4. **Compression** (`session-init.py` + `/compress`): Stale entries are automatically compressed when triggers fire (>30 entries, ≥5 sessions idle, or ≥60% stale ratio). Compression moves entries through tiers:
+
+| Tier | Format | Location |
+|------|--------|----------|
+| Active | Full entry with body/Why | `session-progress.md` |
+| Compressed | One-liner, Why preserved for decisions | `project-status.md` → `## Compressed Context` |
+| Archived | Title only | `archive.md` |
+| Dropped | Gone | — |
+
+Decision `Why:` text is **never** compressed, summarized, or dropped — it transfers verbatim through all tiers.
+
+### Status files
+
+```
+~/.claude/status/<project>/
+├── session-progress.md    # Current session entries (active tier)
+├── project-status.md      # Cumulative project history + compressed entries
+├── ref-cache.json         # Reference scores, session count, compression metadata
+└── archive.md             # Archived entry titles (capped at 500 lines)
+```
+
 ## Settings Reference
 
 `settings.json.reference` shows the full `~/.claude/settings.json` structure including:
-- Hook wiring (PostToolUse for formatting, Stop for tests)
+- Hook wiring (PostToolUse for formatting + ref scoring, SessionStart for session init, Stop for tests + auto-capture)
 - Status line command
 - Enabled plugins (`frontend-design`)
 - Cleanup period and attribution config
@@ -88,6 +159,12 @@ This repo is the canonical source for all Claude Code configuration. The install
 
 You'll be prompted for each component (CLAUDE.md, hooks, skills, rules, status line) — pick what you want. Existing files are backed up with a `.bak` suffix before being replaced.
 
-After installing, review `settings.json.reference` and merge the relevant sections (hook wiring, status line, plugins) into your `~/.claude/settings.json`.
+After installing, review `settings.json.reference` and merge the relevant sections (hook wiring, status line, plugins) into your `~/.claude/settings.json`. **Hooks are not active until registered in `settings.json`.**
+
+### Updating
+
+Since `install.sh` creates symlinks (not copies), pulling new changes from the repo takes effect immediately — no re-install needed. The only exception is **new files** (e.g., a new hook or rule): these require re-running `install.sh` to create the new symlinks. New files inside an existing skill directory are picked up automatically since skills are symlinked as directories.
 
 To uninstall, run `./uninstall.sh` — it finds symlinks pointing into this repo, lets you pick which to remove, and restores `.bak` files where they exist.
+
+See [DEVELOPER.md](DEVELOPER.md) for development setup, testing, and architecture notes.

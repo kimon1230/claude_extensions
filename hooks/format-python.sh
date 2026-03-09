@@ -22,8 +22,11 @@ while [[ "$SEARCH" != "/" ]]; do
   SEARCH=$(dirname "$SEARCH")
 done
 
-BLACK="${VENV:+$VENV/}black"
-RUFF="${VENV:+$VENV/}ruff"
+# Security: only use venv tools, never fall back to PATH (CWE-427)
+[[ -z "$VENV" ]] && exit 0
+
+BLACK="$VENV/black"
+RUFF="$VENV/ruff"
 
 # Ruff fix first (may restructure code), then black for final formatting
 command -v "$RUFF" &>/dev/null && "$RUFF" check --fix --quiet "$FILE_PATH" 2>/dev/null
