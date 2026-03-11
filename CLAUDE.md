@@ -23,12 +23,12 @@
 ## Planning
 For complex tasks, use plan mode (Shift+Tab). Store plans in `~/.claude/plans/<project-name>/` with descriptive filenames — nowhere else. Delete completed plans.
 
-For plans involving 3+ modules or multi-batch implementation, run `/critical-review` before presenting the plan. Small plans (single module, simple changes) do not need formal review.
+Always run `/critical-review` on every plan before presenting it to the user.
 
 For multiple related features: master plan + feature plans, run `/critical-review` on each.
 
 ## Implementation
-- **NEVER implement without a plan.** Every non-trivial change must have a plan in `~/.claude/plans/<project-name>/` before any code is written. If the user asks to implement something and no plan exists, create one first (and run `/critical-review` if it meets the threshold). Trivial changes (single-file fixes, config tweaks, one-liner adjustments) are exempt.
+- **NEVER implement without a plan.** Every non-trivial change must have a plan in `~/.claude/plans/<project-name>/` before any code is written. If the user asks to implement something and no plan exists, create one first and run `/critical-review`. Trivial changes (single-file fixes, config tweaks, one-liner adjustments) are exempt.
 - For plan batch implementation, use `/implement-batch`. It handles subagent orchestration, test validation, and reporting.
 - New modules must have corresponding test files. Test every public API path; aim for high coverage but don't pad with trivial tests for `__repr__`, constants, or simple pass-throughs.
 

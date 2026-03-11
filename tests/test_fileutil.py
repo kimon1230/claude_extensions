@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
+
+import pytest
+
+_is_root = os.getuid() == 0
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -42,6 +47,23 @@ class TestAtomicWrite:
         # Only the target file should exist, no leftover tmp files
         files = os.listdir(tmp_path)
         assert files == ["output.txt"]
+
+    @pytest.mark.skipif(_is_root, reason="root ignores file permissions")
+    def test_parent_dirs_created_with_mode_0o700(self, tmp_path):
+        target = str(tmp_path / "x" / "y" / "output.txt")
+        atomic_write(target, "secure")
+        parent = str(tmp_path / "x" / "y")
+        mode = stat.S_IMODE(os.stat(parent).st_mode)
+        assert mode == 0o700
+
+    @pytest.mark.skipif(_is_root, reason="root ignores file permissions")
+    def test_preexisting_dir_permissions_corrected_to_0o700(self, tmp_path):
+        parent = tmp_path / "loose"
+        parent.mkdir(mode=0o755)
+        target = str(parent / "output.txt")
+        atomic_write(target, "fix perms")
+        mode = stat.S_IMODE(os.stat(str(parent)).st_mode)
+        assert mode == 0o700
 
 
 class TestSafeReadJson:
@@ -159,3 +181,15 @@ class TestSafeWriteJson:
         safe_write_json(target, {"fresh": True})
         backup = target + ".bak"
         assert not os.path.exists(backup)
+
+    @pytest.mark.skipif(_is_root, reason="root ignores file permissions")
+    def test_backup_file_has_mode_0o600(self, tmp_path):
+        target = str(tmp_path / "data.json")
+        # Create initial file with overly permissive mode
+        with open(target, "w") as f:
+            json.dump({"old": True}, f)
+        os.chmod(target, 0o644)
+        safe_write_json(target, {"new": True})
+        backup = target + ".bak"
+        mode = stat.S_IMODE(os.stat(backup).st_mode)
+        assert mode == 0o600

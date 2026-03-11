@@ -163,6 +163,96 @@ class TestGetStatusDir:
         result = get_status_dir("idempotent-proj")
         assert os.path.isdir(result)
 
+    def test_sanitizes_traversal_with_basename(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("foo/../bar")
+        expected = os.path.join(fake_home, ".claude", "status", "bar")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_deep_traversal(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("../../etc/shadow")
+        expected = os.path.join(fake_home, ".claude", "status", "shadow")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_dotdot_to_unknown(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("..")
+        expected = os.path.join(fake_home, ".claude", "status", "unknown")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_special_chars(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("foo bar!@#")
+        expected = os.path.join(fake_home, ".claude", "status", "foo_bar___")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_preserves_valid_chars(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("valid-name.v2")
+        expected = os.path.join(fake_home, ".claude", "status", "valid-name.v2")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_empty_string_to_unknown(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("")
+        expected = os.path.join(fake_home, ".claude", "status", "unknown")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_dots_with_trailing_slashes_to_unknown(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("....//")
+        expected = os.path.join(fake_home, ".claude", "status", "unknown")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_all_dots_to_unknown(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("....")
+        expected = os.path.join(fake_home, ".claude", "status", "unknown")
+        assert result == expected
+        assert os.path.isdir(expected)
+
+    def test_sanitizes_leading_dots_stripped(self, tmp_path, monkeypatch):
+        fake_home = str(tmp_path / "fakehome")
+        monkeypatch.setenv("HOME", fake_home)
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", fake_home))
+
+        result = get_status_dir("..hidden")
+        expected = os.path.join(fake_home, ".claude", "status", "hidden")
+        assert result == expected
+        assert os.path.isdir(expected)
+
 
 class TestGetSessionProgressPath:
     def test_returns_correct_path(self, tmp_path, monkeypatch):

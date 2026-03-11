@@ -8,7 +8,11 @@ Stdlib only — no external dependencies.
 from __future__ import annotations
 
 import os
+import re as _re
 import subprocess
+
+
+_SAFE_PROJECT_NAME = _re.compile(r"[^a-zA-Z0-9._-]")
 
 
 def get_project_name() -> str:
@@ -63,8 +67,11 @@ def get_status_dir(project_name: str | None = None) -> str:
     """Return ``~/.claude/status/<project-name>/``, creating it if needed."""
     if project_name is None:
         project_name = get_project_name()
-    # Sanitize: strip path separators and '..' to prevent traversal (CWE-22)
-    project_name = os.path.basename(project_name.replace("..", ""))
+    # Sanitize: basename prevents traversal, regex restricts to safe chars (CWE-22)
+    project_name = os.path.basename(project_name)
+    project_name = _SAFE_PROJECT_NAME.sub("_", project_name)
+    # Strip leading dots (hidden dirs) and reject dot-only / empty names
+    project_name = project_name.lstrip(".")
     if not project_name:
         project_name = "unknown"
     path = os.path.join(os.path.expanduser("~"), ".claude", "status", project_name)

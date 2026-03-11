@@ -1,13 +1,13 @@
 # Claude Code Extensions
 
-Custom hooks, skills, rules, and configuration for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Custom hooks, skills, rules, and configuration for [Claude Code](https://code.claude.com/docs/en/overview).
 
 Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Code's behavior.
 
 ## Structure
 
 ```
-├── CLAUDE.md                   # Global instructions (symlinked to ~/.claude/CLAUDE.md)
+├── CLAUDE.md                   # Global instructions (@imported into ~/.claude/CLAUDE.md)
 ├── install.sh                  # Interactive installer — pick components, symlink into ~/.claude/
 ├── uninstall.sh                # Interactive uninstaller — restore backups or remove symlinks
 ├── hooks/                      # Event-driven hooks (shell + Python)
@@ -106,12 +106,13 @@ Language-specific conventions loaded as context for all projects. Key highlights
 `statusline-command.sh` renders a PS1-style prompt in the Claude Code UI:
 
 ```
-user@host:~/project (Sonnet 4.6) [████████░░ 80%]
+user@host:~/project (Sonnet 4.6) [████████░░ 80%] ~$1.23
 ```
 
 - Green/yellow/red context bar based on remaining context window
 - Model name (with "Claude " prefix stripped for brevity)
 - Thresholds shifted +10% to compensate for underreported usage
+- Cost estimate (`~$X.XX`) — the `~` prefix indicates this is an approximate API-equivalent cost, not an actual charge. Claude Code reports `total_cost_usd` even on Pro/Max subscriptions as a usage-equivalent metric. Suppressed when $0.00.
 
 ## Context Persistence
 
@@ -147,24 +148,26 @@ Decision `Why:` text is **never** compressed, summarized, or dropped — it tran
 - Hook wiring (PostToolUse for formatting + ref scoring, SessionStart for session init, Stop for tests + auto-capture)
 - Status line command
 - Enabled plugins (`frontend-design`)
-- Cleanup period and attribution config
+- Cleanup period (set to 3 days; Claude Code default is 30) and attribution config
 
 ## Installation
 
-This repo is the canonical source for all Claude Code configuration. The install script symlinks selected components into `~/.claude/`, backing up any existing files first.
+This repo is the canonical source for all Claude Code configuration. The install script adds an `@import` line to your existing `~/.claude/CLAUDE.md` (non-destructive — your customizations are preserved) and symlinks other components (hooks, skills, rules, status line) into `~/.claude/`.
 
 ```bash
 ./install.sh
 ```
 
-You'll be prompted for each component (CLAUDE.md, hooks, skills, rules, status line) — pick what you want. Existing files are backed up with a `.bak` suffix before being replaced.
+You'll be prompted for each component. After installing, review `settings.json.reference` and merge the relevant sections (hook wiring, status line, plugins) into your `~/.claude/settings.json`. **Hooks are not active until registered in `settings.json`.**
 
-After installing, review `settings.json.reference` and merge the relevant sections (hook wiring, status line, plugins) into your `~/.claude/settings.json`. **Hooks are not active until registered in `settings.json`.**
+### Upgrading from symlink-based install
+
+If you previously installed with an older version that symlinked `CLAUDE.md`, running `install.sh` again will automatically migrate: the symlink is removed, your original `CLAUDE.md` is restored from backup, and an `@import` line is added instead.
 
 ### Updating
 
-Since `install.sh` creates symlinks (not copies), pulling new changes from the repo takes effect immediately — no re-install needed. The only exception is **new files** (e.g., a new hook or rule): these require re-running `install.sh` to create the new symlinks. New files inside an existing skill directory are picked up automatically since skills are symlinked as directories.
+Since hooks, skills, and rules are symlinked (not copied), pulling new changes from the repo takes effect immediately — no re-install needed. The `@import` for `CLAUDE.md` also resolves live from the repo. New files (e.g., a new hook) require re-running `install.sh` to create new symlinks.
 
-To uninstall, run `./uninstall.sh` — it finds symlinks pointing into this repo, lets you pick which to remove, and restores `.bak` files where they exist.
+To uninstall, run `./uninstall.sh` — it removes the `@import` line from `CLAUDE.md` and cleans up symlinks. Your original `CLAUDE.md` content is preserved.
 
 See [DEVELOPER.md](DEVELOPER.md) for development setup, testing, and architecture notes.

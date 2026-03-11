@@ -1,6 +1,7 @@
 ---
 name: security-audit
 description: Run a parallel subagent security audit of the codebase, a specific file/directory, or a set of changes. Use when you want a thorough security review before shipping.
+argument-hint: "[scope]"
 ---
 
 # Security Review
@@ -81,7 +82,14 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
   - **Infrastructure state**: `terraform.tfstate`, `terraform.tfstate.backup`, `*.tfvars`, `.terraform/`, `pulumi.*.yaml` (with secrets). Severity: **high** if missing (cloud credentials, resource IDs).
   - **OS artifacts**: `.DS_Store`, `Thumbs.db`, `Desktop.ini`, `._*`. Severity: **low**.
   - **Build/runtime artifacts**: `node_modules/`, `__pycache__/`, `*.pyc`, `.venv/`, `venv/`, `dist/`, `build/`, `*.egg-info/`, `target/`, `vendor/` (if not vendored intentionally). Severity: **low**.
-  - **Secrets scanning tooling**: Are there pre-commit hooks or tooling configs for secret scanning (`.pre-commit-config.yaml` with `detect-secrets`, `gitleaks`, `trufflehog`)? If neither exists, flag as **medium**: "No secrets scanning tooling configured."
+  - **Secrets scanning tooling**: Are there pre-commit hooks or tooling configs for secret scanning (`.pre-commit-config.yaml` with `detect-secrets`, `gitleaks`, `trufflehog`)? If neither exists, flag as **medium**: "No secrets scanning tooling configured. Recommend adding a `.pre-commit-config.yaml` with `gitleaks` to prevent secrets from being committed." Include a concrete fix with the minimal config snippet:
+    ```yaml
+    repos:
+      - repo: https://github.com/gitleaks/gitleaks
+        rev: v8.21.2
+        hooks:
+          - id: gitleaks
+    ```
 
   **5d. Check for sensitive data in logs and error handling**:
   - Logging statements that interpolate variables named `password`, `token`, `secret`, `key`, `credential`, `authorization`, `cookie`, `session`

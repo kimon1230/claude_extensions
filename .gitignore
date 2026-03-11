@@ -38,6 +38,9 @@ venv/
 credentials.json
 service-account*.json
 
+# Backup files (created by install.sh)
+*.bak
+
 # OS artifacts
 .DS_Store
 Thumbs.db

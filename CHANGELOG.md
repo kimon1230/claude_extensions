@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3] - 2026-03-10
+
+### Added
+
+- **Shell test suites** — `tests/test_install.sh` (48 tests) and `tests/test_statusline.sh` (27 tests) covering installer, uninstaller, and status line
+- `tests/test_format_python.py` — unit tests for format-python.sh venv resolution
+
+### Changed
+
+- **CLAUDE.md install switched from symlink to `@import`** — `install.sh` now prepends an `@import` line to `~/.claude/CLAUDE.md` instead of replacing it with a symlink. User customizations are preserved. Old symlink installs are automatically migrated on re-run.
+- `uninstall.sh` — restructured into `main()` function with `--source-only` guard for testability; removes `@import` block via sed; fixed `link_points_to_repo` prefix-match bug (`"$REPO_DIR/"*` not `"$REPO_DIR"*`)
+- `install.sh` — added `--source-only` guard, `upgrade_claude_md_symlink()`, `install_claude_md_import()` with HTML comment markers for idempotent import management
+- `statusline-command.sh` — cost display changed from `$X.XX` to `~$X.XX` to indicate API-equivalent estimate
+- `README.md` — rewritten installation section for @import approach, added upgrade guide, documented cost estimate semantics, added DEVELOPER.md link
+- `settings.json.reference` — documented all hook timeouts and event matchers
+- **Skill frontmatter** — all 5 skills updated with `name`, `description`, and `argument-hint` fields
+- **Rules** — `python.md`, `javascript.md`, `shell.md` updated with project-specific conventions
+- `/security-audit` — Agent 5 now recommends `.pre-commit-config.yaml` with `gitleaks` when no secrets scanning tooling is found
+
+### Security
+
+- `hooks/format-python.sh` — quote all variable expansions to prevent word splitting (CWE-78)
+- `hooks/lib/ref_tracker.py` — bounded keyword set size, reject non-string/non-finite score values
+- `hooks/lib/fileutil.py` — validate JSON decode returns dict before use
+- `hooks/lib/paths.py` — additional traversal guards on project name sanitization
+- `.gitignore` — added `*.bak` to prevent backup files from being tracked
+
 ## [0.2] - 2026-03-09
 
 ### Added

@@ -1,6 +1,7 @@
 ---
 name: critical-review
 description: Run a parallel subagent critical review of the current plan or document. Use when you want structured feedback before implementation.
+argument-hint: "[plan-file]"
 ---
 
 # Critical Review

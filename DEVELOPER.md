@@ -12,11 +12,13 @@ python3 -m venv .venv
 ## Testing
 
 ```bash
-.venv/bin/pytest          # 285 tests
-.venv/bin/ruff check .    # lint
+.venv/bin/pytest              # Python tests (319 tests)
+.venv/bin/ruff check .        # lint
+bash tests/test_install.sh    # installer/uninstaller tests (48 tests)
+bash tests/test_statusline.sh # status line tests (27 tests)
 ```
 
-Tests live in `tests/` and cover all Python modules in `hooks/lib/` and the hook entry points.
+Python tests live in `tests/` and cover all modules in `hooks/lib/` and the hook entry points. Shell tests are standalone bash scripts with built-in assertion helpers.
 
 ## Architecture
 
@@ -77,6 +79,27 @@ Session start → session-init.py → checks triggers → compressor.py
                                     ↓
               Active entries stay ← Stale entries compress/archive/drop
 ```
+
+### Install mechanism
+
+`install.sh` and `uninstall.sh` both support `--source-only` to allow tests to source guard functions without executing the installer:
+
+```bash
+source install.sh --source-only   # exports resolve_path, check_overlap, etc.
+source uninstall.sh --source-only  # exports link_points_to_repo, uninstall_claude_md_import, etc.
+```
+
+**CLAUDE.md** uses `@import` (not symlink) — the installer prepends a 3-line block with HTML comment markers to `~/.claude/CLAUDE.md`:
+
+```
+<!-- claude-extensions:import -->
+@/path/to/repo/CLAUDE.md
+<!-- /claude-extensions:import -->
+```
+
+This preserves user customizations. The uninstaller removes only the marked block via sed. Old symlink-based installs are automatically detected and migrated.
+
+**All other components** (hooks, skills, rules, statusline) are symlinked from `~/.claude/` into the repo, so `git pull` updates them in place.
 
 ### Hook registration
 

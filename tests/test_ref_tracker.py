@@ -60,6 +60,51 @@ class TestExtractPaths:
         paths = extract_paths(text)
         assert "a/b/c/d/e.txt" in paths
 
+    def test_adversarial_no_backtracking(self) -> None:
+        import time
+
+        adversarial = "/".join(["a"] * 10000) + "X"  # no extension
+        t = time.time()
+        extract_paths(adversarial)
+        elapsed = time.time() - t
+        assert elapsed < 1.0, f"ReDoS: took {elapsed:.2f}s on adversarial input"
+
+    def test_normal_path_extraction(self) -> None:
+        text = "Check src/foo/bar.py for details"
+        paths = extract_paths(text)
+        assert paths == {"src/foo/bar.py"}
+
+    def test_dotted_directory_v2(self) -> None:
+        text = "File src/v2.0/main.py was changed"
+        paths = extract_paths(text)
+        assert "src/v2.0/main.py" in paths
+
+    def test_dotted_directory_node_modules(self) -> None:
+        text = "Cached at node_modules/.cache/file.js"
+        paths = extract_paths(text)
+        assert "node_modules/.cache/file.js" in paths
+
+    def test_dotfiles_with_extensions(self) -> None:
+        text = "Config at src/.eslintrc.json"
+        paths = extract_paths(text)
+        assert "src/.eslintrc.json" in paths
+
+    def test_dotfiles_without_extensions_no_match(self) -> None:
+        text = "Check config/.env and src/.gitignore"
+        paths = extract_paths(text)
+        assert not any(".env" in p for p in paths)
+        assert not any(".gitignore" in p for p in paths)
+
+    def test_single_segment_no_match(self) -> None:
+        text = "Just foo.py alone"
+        paths = extract_paths(text)
+        assert len(paths) == 0
+
+    def test_windows_backslash_paths(self) -> None:
+        text = r"Located at src\foo\bar.py"
+        paths = extract_paths(text)
+        assert len(paths) == 1
+
 
 class TestExtractKeywords:
     def test_filters_stop_words(self) -> None:

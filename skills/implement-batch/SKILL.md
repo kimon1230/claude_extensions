@@ -1,6 +1,7 @@
 ---
 name: implement-batch
 description: Implement a plan batch using parallel subagents. Each agent implements its module with tests, then the full suite is validated.
+argument-hint: "[plan-file] [batch-number]"
 ---
 
 # Implement Batch

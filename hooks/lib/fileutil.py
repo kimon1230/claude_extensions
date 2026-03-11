@@ -21,7 +21,8 @@ def atomic_write(path: str, content: str) -> None:
     """
     parent = os.path.dirname(path)
     if parent:
-        os.makedirs(parent, exist_ok=True)
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        os.chmod(parent, 0o700)
 
     fd, tmp_path = tempfile.mkstemp(dir=parent or ".")
     try:
@@ -81,8 +82,10 @@ def safe_write_json(path: str, data: dict) -> None:
         backup_path = path + ".bak"
         parent = os.path.dirname(backup_path)
         if parent:
-            os.makedirs(parent, exist_ok=True)
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+            os.chmod(parent, 0o700)
         shutil.copy2(path, backup_path)
+        os.chmod(backup_path, 0o600)
 
     content = json.dumps(data, indent=2)
     atomic_write(path, content)

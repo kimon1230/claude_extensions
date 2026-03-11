@@ -24,7 +24,9 @@ TIER3_MIN_KEYWORDS = 3  # Minimum shared keywords for Tier 3
 MIN_KEYWORD_LEN = 4  # Minimum keyword length
 
 # Pattern: requires at least one / or \ (avoids matching "3.11.0", floats, URLs)
-_PATH_RE = re.compile(r"(?:[\w\-]+[/\\])+[\w\-]+\.[\w]+", re.ASCII)
+_PATH_RE = re.compile(
+    r"(?:^|(?<=[^/\\\w\-]))[\w\-]+(?:[/\\][\w\-.]+)+\.[\w]+", re.ASCII
+)
 
 _SPLIT_RE = re.compile(r"[\s,;:=\(\)\[\]\{\}\"\'`<>|&.*?+\-/\\#@!~^%$]+")
 
