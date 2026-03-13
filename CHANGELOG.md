@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4] - 2026-03-13
+
+### Added
+
+- **`/code-review` skill** — parallel subagent code quality review from a senior distinguished engineer's perspective. 5 agents with explicit non-overlapping boundaries: Architecture & Design, Code Quality & Readability, Correctness & Robustness, Performance & Efficiency, Maintainability & Testing. Language-aware with idiomatic checks for Python, JS/TS, Go, Rust, and Java. Reads project rule files (`rules/<language>.md`) for project-specific conventions.
+
+### Changed
+
+- **`/security-audit` — 5 improvements from external security engineer analysis:**
+  - **Threat context** (new Section 1 subsection): main session examines up to 10 files to identify trust boundaries, data sensitivity, and high-risk components before spawning agents. Relevant context subsets composed into each agent's prompt.
+  - **Agent 7 — CI/CD Pipeline Security** (new always-on agent): checks for SAST (Semgrep, CodeQL), SCA (Trivy, Snyk, Dependabot), and DAST tooling in CI configs. Delineated from Agent 5 (secrets vs. tooling presence).
+  - **IaC security review**: detects Terraform, CloudFormation, Pulumi, Kubernetes, and Helm files. Adds conditional checks to Agent 4 (IAM policies, public exposure, encryption gaps, hardcoded values, K8s misconfigs) with increased finding limit (max 15).
+  - **Compliance context** (optional): `compliance: pci-dss|hipaa|soc2|gdpr` parameter adds framework-specific checks distributed as conditional blocks across relevant agents. Includes disclaimer in synthesis.
+  - **Quantified impact**: verbatim template now instructs agents to quantify blast radius from code context.
+- **`/security-audit` scope** — removed artificial 30-file cap for entire-project reviews; agents now review all source files with intelligent distribution by domain relevance
+- **`/code-review` scope** — same: no artificial file cap, full project coverage with prioritization by architectural significance
+
 ## [0.3] - 2026-03-10
 
 ### Added

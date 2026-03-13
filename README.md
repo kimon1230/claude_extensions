@@ -31,7 +31,8 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 │   ├── compress/               # /compress — force context compression on demand
 │   ├── critical-review/        # /critical-review — parallel subagent plan review
 │   ├── implement-batch/        # /implement-batch — parallel subagent batch implementation
-│   └── security-audit/         # /security-audit — parallel subagent security review
+│   ├── security-audit/         # /security-audit — parallel subagent security review
+│   └── code-review/            # /code-review — parallel subagent code quality review
 ├── rules/                      # Language-specific coding conventions
 │   ├── python.md               # venv usage, atomic edits around hooks, pathlib, type hints
 │   ├── javascript.md           # package manager detection, ES modules, TypeScript prefs
@@ -91,7 +92,8 @@ Outputs last 50 lines of test output to stderr on failure. Non-blocking (exit 1 
 | `/compress` | Manual | Forces context compression on demand, bypassing automatic trigger thresholds. Moves stale entries through tiers: Active → Compressed → Archived → Dropped. |
 | `/critical-review` | Manual | Spawns 4 parallel subagents to review a plan for correctness, edge cases, feasibility, and test coverage. Iterates until no critical/major findings. |
 | `/implement-batch` | Manual | Implements one batch of a plan using parallel subagents per module, then validates with full test suite. |
-| `/security-audit` | Manual | Spawns 5-6 parallel subagents covering OWASP categories, secrets scanning, and web-specific checks. Includes follow-up verification rounds. |
+| `/security-audit` | Manual | Spawns 6-7 parallel subagents covering OWASP categories, secrets scanning, CI/CD pipeline security, and web-specific checks. Supports IaC detection and optional compliance frameworks (PCI-DSS, HIPAA, SOC2, GDPR). Includes follow-up verification rounds. |
+| `/code-review` | Manual | Spawns 5 parallel subagents reviewing architecture, code quality, correctness, performance, and maintainability from a senior distinguished engineer's perspective. Language-aware with idiomatic checks for Python, JS/TS, Go, Rust, and Java. Includes follow-up verification rounds. |
 
 ## Rules
 

@@ -1,7 +1,7 @@
 ---
 name: security-audit
 description: Run a parallel subagent security audit of the codebase, a specific file/directory, or a set of changes. Use when you want a thorough security review before shipping.
-argument-hint: "[scope]"
+argument-hint: "[scope] [compliance: pci-dss|hipaa|soc2|gdpr]"
 ---
 
 # Security Review
@@ -13,16 +13,40 @@ This skill must only be invoked from the main session, never from a subagent.
 a. If the user specified file paths, directories, or a description of what to review, use that as the scope.
 b. If the user said "review my changes" or similar, use `git diff HEAD` (unstaged + staged) and `git diff --cached` as the scope. If no changes exist, tell the user and stop.
 c. If no scope is specified, ask the user: "What should I review? Options: specific files/directories, recent changes (`git diff`), or the entire project."
-d. For entire-project scope, identify key entry points: look for route definitions, API handlers, middleware, auth modules, database access layers, and configuration files. Limit to the most security-relevant files (max 30).
+d. For entire-project scope, identify all source files (exclude vendored/generated code, build artifacts, lock files, and test fixtures). Prioritize by security relevance: route definitions, API handlers, middleware, auth modules, database access layers, and configuration files. Distribute files across agents by relevance to each agent's domain.
 e. Confirm scope with the user before proceeding: "I'll security-review [scope description]. Correct?"
 
 ### Web Application Detection
 
 After determining scope, check whether the project is a web application by looking for indicators: route/endpoint definitions, HTTP framework imports (Express, Flask, Django, FastAPI, Spring, Next.js, Rails, ASP.NET, etc.), HTML templates, API handlers, or middleware. If detected, set `web_app = true` and inform the user: "Detected web application — enabling web-specific security checks (Agent 6)." If uncertain, ask.
 
+### Threat Context
+
+Before spawning subagents, build a threat context by examining at most 10 files (entry points, configs, auth modules, route definitions):
+- **Trust boundaries**: Where untrusted input enters (user input, external APIs, file uploads, webhooks, message queues) and where it's consumed (database, command execution, rendering, serialization).
+- **Data sensitivity**: Classify data handled — PII, financial, health/PHI, authentication material, or public-only. Note the highest sensitivity tier.
+- **High-risk components**: Identify the 3-5 components with most exposure: auth modules, payment processing, admin endpoints, data export/import, file handling, external integrations.
+
+Capture as a short bullet list (max 8 lines). If fewer than 3 relevant files are found, skip threat context generation and note "Insufficient project structure for threat modeling" in the report.
+
+The main session must compose the relevant subset of this context into each subagent's prompt — pass trust boundaries and high-risk components to Agents 1, 2, 4, and 7; pass data sensitivity to Agents 3 and 5; pass all three to Agent 6 (if active). Follow the same pattern as `web_app` conditionals: inline the context directly, do not use placeholder variables.
+
+### Infrastructure as Code Detection
+
+Check for IaC files: `*.tf` (Terraform), CloudFormation templates (`AWSTemplateFormatVersion`), `Pulumi.yaml`, Kubernetes manifests (files containing both `apiVersion:` and `kind:` where `kind` matches a known K8s resource — Pod, Deployment, Service, StatefulSet, Ingress, ConfigMap, Secret, etc. — or files co-located with `kustomization.yaml`), Helm charts (`Chart.yaml`). If found, set `iac_detected = true` and inform user: "Detected IaC files ([tool]) — enabling infrastructure configuration checks in Agent 4."
+
+### Compliance Context (Optional)
+
+If the user includes `compliance: <framework>` in their arguments (e.g., `/security-audit src/ compliance: hipaa`), set `compliance_framework` and confirm with the user. If the user mentions compliance in natural language (e.g., "we need HIPAA compliance"), infer the framework but always confirm before enabling compliance-specific checks: "I detected a reference to [framework] compliance. Should I enable [framework]-specific security checks?" Multiple frameworks can be comma-separated. Supported: `pci-dss`, `hipaa`, `soc2`, `gdpr`.
+
+Append a compliance note to the threat context passed to each relevant agent:
+> **Compliance scope**: [framework]. Prioritize findings mapping to this framework's controls. Append control references in the **Category** field (e.g., "CWE-798 / PCI-DSS 2.1").
+
 ## 2. Round 1 — Spawn Parallel Subagents
 
-Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For Agent 5 (secrets), always include these files in scope regardless of user-specified scope (if they exist): `.env*`, `*.env`, `docker-compose*.yml`, `Dockerfile*`, `.github/workflows/*.yml`, `.gitlab-ci.yml`, `Jenkinsfile`, `.gitignore`, `.pre-commit-config.yaml`, and any config files matching `*config*`, `*settings*`, `*secret*`.
+Spawn 6 subagents for all projects (Agents 1-5 and 7). If `web_app = true`, also spawn Agent 6 (7 total). If `iac_detected = true`, add up to 20 IaC files to Agent 4's scope (prioritize root modules and files containing `resource`/`data` blocks) — these must be included in the scope shown to the user in step (e) for confirmation, not added silently.
+
+For Agent 5 (secrets), always include these files in scope regardless of user-specified scope (if they exist): `.env*`, `*.env`, `docker-compose*.yml`, `Dockerfile*`, `.github/workflows/*.yml`, `.gitlab-ci.yml`, `Jenkinsfile`, `.gitignore`, `.pre-commit-config.yaml`, and any config files matching `*config*`, `*settings*`, `*secret*`. Note: Agent 5 scans CI configs for hardcoded secrets/credentials only — security tooling presence is Agent 7's concern.
 
 - **Agent 1 — Injection & Input Validation**: SQL injection, NoSQL injection, command injection, LDAP injection, XPath injection, template injection (SSTI), header injection, log injection. Check that all user input is validated at system boundaries, parameterized queries are used, and no string concatenation builds queries or commands.
 
@@ -31,6 +55,9 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
   - **XSS indirect input sources**: Beyond form fields, check URL parameters, URL fragments (hash values), HTTP headers rendered in pages (Referer, User-Agent), data from third-party APIs displayed to users, WebSocket messages, `postMessage` data from iframes, localStorage/sessionStorage values rendered to DOM, error messages reflecting user input, PDF/document generators accepting HTML, email templates with user data, admin log viewers, JSON responses rendered as HTML, SVG uploads (can contain JavaScript), and markdown rendering that allows raw HTML.
   - **Context-specific output encoding**: Verify HTML context uses HTML entity encoding, JavaScript context uses JS escaping, URL context uses URL encoding, CSS context uses CSS escaping. Flag any manual string concatenation into HTML/JS without framework auto-escaping.
   - **SQL injection blind spots**: ORDER BY clauses (cannot parameterize — must whitelist column names), table/column names in dynamic queries (must whitelist), LIKE patterns (escape `%` and `_` wildcards), IN clauses with dynamic lists.
+
+  **If `compliance_framework` includes `gdpr`, also check:**
+  - **Consent handling**: Verify data collection endpoints have explicit consent mechanisms before processing personal data.
 
 - **Agent 2 — Authentication, Authorization & Session Management**: Broken auth flows, missing authorization checks on endpoints, IDOR, privilege escalation (horizontal and vertical), insecure session handling, JWT misuse (algorithm confusion, missing expiry, weak secrets), OAuth/OIDC misconfigurations, missing rate limiting on auth endpoints, account enumeration via error messages, insecure password storage, missing MFA considerations, session fixation, token leakage.
 
@@ -43,7 +70,25 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
   - **Password hashing**: Flag MD5, SHA1, plain SHA256, or any non-salted hash for password storage. Require Argon2id, bcrypt, or scrypt.
   - **Mass assignment**: Flag ORM calls that pass unfiltered request bodies to create/update operations (e.g., `User.update(req.body)`, `Model.objects.create(**request.data)`). Require explicit field whitelisting.
 
+  **If `compliance_framework` includes `pci-dss`, also check:**
+  - MFA required for admin access, unique IDs per user, session timeout ≤15 minutes for payment systems.
+
+  **If `compliance_framework` includes `hipaa`, also check:**
+  - Minimum necessary access principle enforced, automatic session termination, unique user identification.
+
+  **If `compliance_framework` includes `soc2`, also check:**
+  - Audit logging of access to sensitive resources, role-based access controls present.
+
 - **Agent 3 — Data Exposure & Cryptography**: Insecure cryptographic choices (MD5/SHA1 for passwords, ECB mode, weak key sizes, static IVs/nonces), missing encryption at rest/in transit, PII exposure in API responses, verbose error messages leaking internals, source maps in production, insecure randomness (Math.random for security), missing data classification, overly broad API response serialization (returning full objects instead of DTOs).
+
+  **If `compliance_framework` includes `pci-dss`, also check:**
+  - Cardholder data encrypted at rest and in transit, masked in logs and displays (show only last 4 digits), not stored post-authorization unless business-justified.
+
+  **If `compliance_framework` includes `hipaa`, also check:**
+  - PHI encrypted at rest (AES-256) and in transit (TLS 1.2+), access audit trails present for all PHI access.
+
+  **If `compliance_framework` includes `gdpr`, also check:**
+  - Data minimization (only necessary fields collected), deletion/anonymization capability exists for user data.
 
 - **Agent 4 — Infrastructure & Supply Chain**: SSRF vectors, path traversal, insecure file uploads, insecure deserialization, XXE, CORS misconfiguration, missing security headers (CSP, HSTS, X-Content-Type-Options, Referrer-Policy), open redirects, CSRF gaps, clickjacking, dependency vulnerabilities (check lock files for known-vulnerable versions), prototype pollution (JS), unsafe `eval`/`exec`, race conditions (TOCTOU), mass assignment, HTTP request smuggling vectors, insecure TLS configuration, missing rate limiting, DoS vectors (ReDoS, unbounded allocation).
 
@@ -52,6 +97,15 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
   - **File upload bypasses**: Check for: double extension (`shell.php.jpg`), null byte in filename (`shell.php%00.jpg`), MIME type spoofing (Content-Type doesn't match actual file), magic byte injection (valid header prepended to malicious file), polyglot files (valid as multiple types), SVG with embedded JavaScript, XXE via Office documents (DOCX/XLSX are ZIP+XML), ZIP slip (`../../../etc/passwd` in archive paths), filename injection (shell metacharacters in filename), ImageMagick exploits. Verify: file extension allowlist, magic byte validation (JPEG=`FF D8 FF`, PNG=`89 50 4E 47`, PDF=`25 50 44 46`), files renamed to random UUIDs, stored outside webroot, served with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`.
   - **XXE parser configuration**: Verify XML parsers disable external entities per language: Java (`setFeature("disallow-doctype-decl", true)`, disable external general/parameter entities), Python (`lxml` with `resolve_entities=False, no_network=True`, or `defusedxml`), PHP (`libxml_disable_entity_loader(true)`), Node.js (DTD processing disabled), .NET (`DtdProcessing = DtdProcessing.Prohibit`, `XmlResolver = null`). Check indirect XML sources: Office documents, SVG files, SAML assertions, RSS/Atom feeds.
   - **GraphQL-specific attacks**: If GraphQL is used, check: introspection enabled in production (should be disabled), missing query depth limiting (recommend max 10 levels), missing query complexity/cost analysis, missing batching limits (operations per request). Flag if none of these controls are present.
+
+  **If `iac_detected = true`, also check:**
+  - **IAM/RBAC policies**: `Action: "*"` with `Resource: "*"`, `AdministratorAccess`, roles with `iam:PassRole` on `*`, missing conditions/scope restrictions.
+  - **Public exposure**: S3/GCS buckets with public ACLs, security groups allowing `0.0.0.0/0` on non-80/443 ports, databases with public endpoints.
+  - **Encryption gaps**: Storage without encryption-at-rest, EBS without KMS, RDS without encryption, missing TLS on listeners.
+  - **Hardcoded values**: AMI IDs, account IDs, IP addresses, ARNs that should be variables. Secrets in `tfvars` or CF parameters with `NoEcho: false`.
+  - **Kubernetes specifics** (if applicable): Containers as root, privileged mode, missing resource limits, `hostNetwork: true`, `automountServiceAccountToken` not disabled, `:latest` image tags.
+
+  When `iac_detected = true`, Agent 4's finding limit increases to **max 15** to accommodate infrastructure findings alongside its existing scope.
 
 - **Agent 5 — Secrets & Sensitive Data Leakage**: This agent performs a dedicated secrets scan. It MUST:
 
@@ -102,6 +156,9 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
   - Run `git log --all -p -S 'password' --max-count=5 -- '*.py' '*.js' '*.ts' '*.go' '*.java' '*.rb'` to sample whether passwords were ever committed in source
   - If secrets found in history, flag as **high**: secrets in git history persist even after file deletion and require history rewriting (`git filter-repo`) or credential rotation
 
+  **If `compliance_framework` includes `gdpr`, also check:**
+  - Verify PII (names, emails, addresses, IPs) is not logged in application logs, error handlers, or debug output.
+
 - **Agent 6 — Web Application Security** *(only if `web_app = true`)*: This agent covers cross-cutting web concerns that span multiple categories. It reviews:
 
   - **Security headers completeness**: Verify all responses include the full recommended set with correct values:
@@ -127,6 +184,22 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
 
   - **Sensitive data in client responses**: Check API responses for fields that should not reach the client: password hashes, internal IDs, full SSNs, unmasked credit card numbers, email addresses of other users, internal infrastructure details, debug information, or full stack traces. Verify DTOs/serializers restrict output fields.
 
+- **Agent 7 — CI/CD Pipeline Security**: Scan CI configs (`.github/workflows/*.yml`, `.gitlab-ci.yml`, `Jenkinsfile`, `.circleci/config.yml`, `azure-pipelines.yml`) for security tooling presence. This agent always runs (not conditional).
+  - **SAST**: Semgrep, CodeQL, SonarQube, Bandit, Brakeman — check for `github/codeql-action`, semgrep steps, or equivalent.
+  - **SCA/dependency scanning**: Trivy, Snyk, Dependabot (`.github/dependabot.yml`), Renovate (`renovate.json`), `npm audit`, `pip-audit`.
+  - **DAST** (web apps only): ZAP, Nuclei, Burp CI — only flag absence if `web_app = true`.
+  - If no CI config files exist, report a single finding: "No CI/CD pipeline detected — unable to verify automated security scanning."
+  - If CI exists but none of these scanning categories are present, flag as **medium**: "No automated security scanning in CI pipeline." Provide a concrete GitHub Actions snippet:
+    ```yaml
+    - uses: semgrep/semgrep-action@v1
+    - uses: aquasecurity/trivy-action@master
+      with: { scan-type: 'fs' }
+    ```
+  - Note: Agent 5 scans CI configs for hardcoded secrets/credentials. Agent 7 scans for security tooling presence — no overlap.
+
+  **If `compliance_framework` includes `soc2`, also check:**
+  - Change management controls in CI/CD pipelines (approval gates, protected branches, required reviews), monitoring/alerting configured.
+
 **Each subagent's prompt MUST include these instructions verbatim:**
 > Read the files in scope. For context, you may read up to 5 additional files (imports, configs, shared utilities) directly referenced by the scoped files. Do NOT scan the entire codebase.
 >
@@ -137,7 +210,7 @@ Spawn 5 subagents for all projects. If `web_app = true`, spawn a 6th agent. For 
 > - **Category**: OWASP category or CWE ID (e.g., "A03:2021 Injection", "CWE-798 Hardcoded Credentials")
 > - **Location**: file path and line number or function name
 > - **Issue**: one-sentence description of the vulnerability
-> - **Impact**: one-sentence description of what an attacker could achieve
+> - **Impact**: one-sentence description of what an attacker could achieve — quantify blast radius from code context where possible (e.g., "exposes entire users table" not just "exposes user data"; "affects every authenticated API endpoint" not just "auth bypass possible")
 > - **Fix**: one-sentence concrete remediation (not "consider" or "review" — state what to do)
 > - **Evidence**: the specific code snippet (max 3 lines) that demonstrates the issue
 >
@@ -157,9 +230,10 @@ After all subagents complete, the main session:
 - Sorts by severity: critical > high > medium > low
 - If a subagent returned zero findings, note that to the user (this is a good sign for that category)
 - Present a consolidated report with:
-  - **Summary**: total findings by severity, overall risk assessment. If `web_app = true`, note which web-specific checks were performed.
+  - **Summary**: total findings by severity, overall risk assessment. Include the threat context summary at the top. If `web_app = true`, note which web-specific checks were performed. If `iac_detected = true`, note which IaC tools were reviewed.
   - **Findings**: the deduplicated list
   - **Positive observations**: security controls that are correctly implemented (max 3 bullet points — keep it brief)
+  - **Compliance coverage** *(only if `compliance_framework` is set)*: list which framework controls were checked and any gaps. Add disclaimer: "This review checks for common technical controls associated with [framework]. It is not a substitute for formal compliance assessment by a qualified auditor."
 
 ## 4. Remediation
 
@@ -174,7 +248,7 @@ If the user wants to fix issues:
 After applying fixes, automatically verify them:
 - Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context:
   - **Agent A — Injection, Auth, Data Exposure & Secrets** (combines agents 1-3 and 5 focus areas)
-  - **Agent B — Infrastructure, Supply Chain & Web** (agent 4 and 6 focus areas, plus checking that fixes didn't introduce new issues or new secret leaks)
+  - **Agent B — Infrastructure, Supply Chain, Web & CI/CD** (agent 4, 6, and 7 focus areas, plus IaC configuration fixes if `iac_detected = true`, plus checking that fixes didn't introduce new issues or new secret leaks)
 - Each subagent's prompt MUST include the same verbatim format template from step 2, modified to say: "Review ONLY the following changed files/sections: [list]. Read at most 3 additional context files. Max 5 items. Also verify that the applied fixes are correct and complete — check for regressions."
 - Synthesize and present to user.
 - **Stop condition**: a round produces **0 critical and 0 high** findings. Medium/low findings do not block — note them and declare the review complete.
