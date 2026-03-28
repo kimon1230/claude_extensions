@@ -12,9 +12,9 @@ python3 -m venv .venv
 ## Testing
 
 ```bash
-.venv/bin/pytest              # Python tests (319 tests)
+.venv/bin/pytest              # Python tests (402 tests)
 .venv/bin/ruff check .        # lint
-bash tests/test_install.sh    # installer/uninstaller tests (48 tests)
+bash tests/test_install.sh    # installer/uninstaller tests (90 tests)
 bash tests/test_statusline.sh # status line tests (27 tests)
 ```
 
@@ -85,7 +85,7 @@ Session start → session-init.py → checks triggers → compressor.py
 `install.sh` and `uninstall.sh` both support `--source-only` to allow tests to source guard functions without executing the installer:
 
 ```bash
-source install.sh --source-only   # exports resolve_path, check_overlap, etc.
+source install.sh --source-only   # exports resolve_path, check_overlap, merge_settings_json, etc.
 source uninstall.sh --source-only  # exports link_points_to_repo, uninstall_claude_md_import, etc.
 ```
 
@@ -101,12 +101,27 @@ This preserves user customizations. The uninstaller removes only the marked bloc
 
 **All other components** (hooks, skills, rules, statusline) are symlinked from `~/.claude/` into the repo, so `git pull` updates them in place.
 
+**Upgrade support** — `install.sh` is designed to be re-run after pulling new versions:
+
+- Already-installed symlinks are detected (raw and resolved path comparison) and skipped without prompting
+- Broken symlinks pointing into the repo (from removed/renamed components) are detected and offered for removal
+- Settings.json entries are stripped and re-added from the current reference on every run, so stale entries are cleaned up automatically
+- When everything is current, the installer produces no interactive prompts
+
 ### Hook registration
 
-Hooks are registered in `settings.json.reference` but must be merged into `~/.claude/settings.json` to activate. The `install.sh` script symlinks hook files but does **not** modify `settings.json`.
+Hooks are registered in `settings.json.reference` and merged into `~/.claude/settings.json` by `install.sh`. The merge is handled by `merge_settings_json()` which:
+
+1. **Strips** all existing repo-managed entries (commands containing `/.claude/hooks/`)
+2. **Adds** all entries from the current reference
+3. **Deduplicates** within each hook type as a safety net
+
+This strip-then-add approach ensures upgrades cleanly replace stale entries (renamed hooks, changed command formats, removed hooks) while preserving user hooks.
 
 | Event | Hook | Timeout |
 |-------|------|---------|
+| PreToolUse (Read) | `sensitive-file-guard.py` | 5s |
+| PreToolUse (Bash) | `sensitive-file-guard.py` | 5s |
 | PostToolUse (Edit\|Write) | `format-python.sh` | default |
 | PostToolUse (Read\|Edit\|Write\|Grep\|Glob) | `ref-scorer.py` | 5s |
 | SessionStart | `session-init.py` | 10s |

@@ -110,6 +110,82 @@ install_claude_md_import() {
     printf "  CLAUDE.md: added @import for %s/CLAUDE.md\n" "$repo_dir"
 }
 
+# merge_settings_json: compute the merged settings.json content.
+# Outputs the merged JSON to stdout. Caller is responsible for precondition checks.
+merge_settings_json() {
+    local settings_file="$1"
+    local reference_file="$2"
+
+    local ref_hooks ref_sl
+    ref_hooks=$(jq '.hooks // {}' "$reference_file")
+    ref_sl=$(jq '.statusLine // null' "$reference_file")
+
+    jq --argjson ref_hooks "$ref_hooks" --argjson ref_sl "$ref_sl" '
+        # Step 1: Strip existing repo-managed hook entries (/.claude/hooks/)
+        # so stale entries from older versions are removed before re-adding.
+        # User hooks (commands not referencing /.claude/hooks/) are preserved.
+        .hooks = ((.hooks // {}) | to_entries | map(
+            .value = [.value[] | select(
+                (.hooks // []) | all(.command | tostring | contains("/.claude/hooks/") | not)
+            )]
+        ) | map(select(.value | length > 0)) | from_entries) |
+
+        # Step 2: Add all reference hook entries
+        .hooks = (
+            reduce ($ref_hooks | keys[]) as $hook_type (
+                (.hooks // {});
+                .[$hook_type] = ((.[$hook_type] // []) + ($ref_hooks[$hook_type] // []))
+            )
+        ) |
+
+        # Step 3: Deduplicate within each hook type (defensive, catches edge cases)
+        .hooks = (.hooks | to_entries | map(
+            .value = (
+                reduce .value[] as $entry (
+                    [];
+                    ($entry | {matcher: (.matcher // ""), cmds: [.hooks[].command]}) as $id |
+                    if any(.[]; {matcher: (.matcher // ""), cmds: [.hooks[].command]} == $id)
+                    then .
+                    else . + [$entry]
+                    end
+                )
+            )
+        ) | from_entries) |
+
+        # Step 4: Update statusLine to match reference (replace if repo-managed, set if absent)
+        if $ref_sl != null then
+            if (.statusLine // null) == null then
+                .statusLine = $ref_sl
+            elif (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then
+                .statusLine = $ref_sl
+            else .
+            end
+        else .
+        end
+    ' "$settings_file"
+}
+
+# install_settings_needed: returns 0 (true) if settings.json needs updating.
+install_settings_needed() {
+    local repo_dir="$1"
+    local claude_dir="$2"
+    local settings_file="$claude_dir/settings.json"
+    local reference_file="$repo_dir/settings.json.reference"
+
+    # No reference file or no jq — install_settings will warn, so say "needed"
+    [ -f "$reference_file" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    # No settings file yet — fresh install needed
+    [ -f "$settings_file" ] || return 0
+
+    # Compare current vs merged
+    local merged existing
+    merged=$(merge_settings_json "$settings_file" "$reference_file")
+    existing=$(jq '.' "$settings_file")
+    [ "$existing" != "$merged" ]
+}
+
 install_settings() {
     local repo_dir="$1"
     local claude_dir="$2"
@@ -134,44 +210,20 @@ install_settings() {
         return 0
     fi
 
-    # Merge: add hooks and statusLine from reference into existing settings
-    # Backup before modifying
+    # Merge hooks and statusLine from reference into existing settings
+    local merged
+    merged=$(merge_settings_json "$settings_file" "$reference_file")
+
+    # Compare before writing — skip if nothing changed
+    local existing
+    existing=$(jq '.' "$settings_file")
+    if [ "$existing" = "$merged" ]; then
+        printf "  settings.json: all hooks already present — skipping\n"
+        return 0
+    fi
+
     cp "$settings_file" "${settings_file}.bak"
     printf "  settings.json: backed up to settings.json.bak\n"
-
-    local ref_hooks ref_statusline existing_hooks merged
-    ref_hooks=$(jq '.hooks // {}' "$reference_file")
-    ref_statusline=$(jq '.statusLine // null' "$reference_file")
-
-    # Merge hooks: for each hook type (PreToolUse, PostToolUse, etc.),
-    # add entries from reference that don't already exist (match on command field)
-    merged=$(jq --argjson ref_hooks "$ref_hooks" --argjson ref_sl "$ref_statusline" '
-        # Merge hooks using reduce over hook type keys
-        .hooks = (
-            reduce ($ref_hooks | keys[]) as $hook_type (
-                (.hooks // {});
-                .[$hook_type] = (
-                    (.[$hook_type] // []) as $existing_entries |
-                    ($ref_hooks[$hook_type] // []) as $ref_entries |
-                    # For each ref entry, add if no existing entry has same matcher+command
-                    reduce ($ref_entries[]) as $ref_entry (
-                        $existing_entries;
-                        ($ref_entry | {matcher: (.matcher // ""), cmds: [.hooks[].command]}) as $ref_id |
-                        if any(.[]; {matcher: (.matcher // ""), cmds: [.hooks[].command]} == $ref_id)
-                        then .
-                        else . + [$ref_entry]
-                        end
-                    )
-                )
-            )
-        ) |
-        # Merge statusLine only if not already set
-        if $ref_sl != null and (.statusLine // null) == null then
-            .statusLine = $ref_sl
-        else .
-        end
-    ' "$settings_file")
-
     printf '%s\n' "$merged" > "$settings_file"
     printf "  settings.json: merged hooks and statusLine from reference\n"
 }
@@ -232,19 +284,38 @@ printf "This will create symlinks from ~/.claude/ to this repo.\n\n"
 
 CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
 
-printf "  Install CLAUDE.md (@import into your existing file)? [Y/n] "
-read -r answer </dev/tty
-case "$answer" in
-    [nN]*) ;;
-    *)
-        upgrade_claude_md_symlink "$CLAUDE_MD" "$REPO_DIR"
-        install_claude_md_import "$CLAUDE_MD" "$REPO_DIR"
-        ;;
-esac
+# Check if CLAUDE.md @import is already present
+if grep -qF "$IMPORT_MARKER" "$CLAUDE_MD" 2>/dev/null; then
+    printf "  CLAUDE.md: @import already present — skipping\n"
+else
+    printf "  Install CLAUDE.md (@import into your existing file)? [Y/n] "
+    read -r answer </dev/tty
+    case "$answer" in
+        [nN]*) ;;
+        *)
+            upgrade_claude_md_symlink "$CLAUDE_MD" "$REPO_DIR"
+            install_claude_md_import "$CLAUDE_MD" "$REPO_DIR"
+            ;;
+    esac
+fi
 
 selected=()
+already_installed=0
 for entry in "${COMPONENTS[@]}"; do
-    label="${entry%%|*}"
+    IFS='|' read -r label source target <<< "$entry"
+
+    # Check if already installed (symlink exists and points to correct source)
+    if [ -L "$target" ]; then
+        existing_link="$(readlink "$target" 2>/dev/null || true)"
+        resolved_source="$(resolve_path "$source")"
+        resolved_existing="$(resolve_path "$target")"
+        if [ "$existing_link" = "$source" ] || [ "$resolved_existing" = "$resolved_source" ]; then
+            printf "  %s: already installed — skipping\n" "$label"
+            already_installed=$((already_installed + 1))
+            continue
+        fi
+    fi
+
     printf "  Install %s? [Y/n] " "$label"
     read -r answer </dev/tty
     case "$answer" in
@@ -254,7 +325,11 @@ for entry in "${COMPONENTS[@]}"; do
 done
 
 if [ ${#selected[@]} -eq 0 ]; then
-    printf "\nNothing selected. Exiting.\n"
+    if [ "$already_installed" -eq "${#COMPONENTS[@]}" ]; then
+        printf "\nAll components already installed.\n"
+    else
+        printf "\nNothing selected. Exiting.\n"
+    fi
     exit 0
 fi
 
@@ -322,14 +397,67 @@ for entry in "${selected[@]}"; do
     printf "  Linked %s\n" "$label"
 done
 
+# ---------------------------------------------------------------------------
+# Stale symlink cleanup (upgrade support)
+# ---------------------------------------------------------------------------
+# After installing, check for broken symlinks under ~/.claude/ that point into
+# the repo. These are leftovers from components that were removed or renamed.
+
+stale_links=()
+while IFS= read -r -d '' entry; do
+    [ -L "$entry" ] || continue
+    # Only broken symlinks (target doesn't exist)
+    [ -e "$entry" ] && continue
+    # Check if it points into our repo
+    raw_target=$(readlink "$entry" 2>/dev/null || true)
+    case "$raw_target" in
+        "$REPO_DIR"/*) stale_links+=("$entry") ;;
+    esac
+done < <(find "$CLAUDE_DIR" -print0 2>/dev/null)
+
+if [ ${#stale_links[@]} -gt 0 ] && [ -t 0 ]; then
+    printf "\nFound %d stale symlink(s) from a previous install:\n" "${#stale_links[@]}"
+    for link in "${stale_links[@]}"; do
+        printf "  %s -> %s\n" "${link#"$CLAUDE_DIR/"}" "$(readlink "$link" 2>/dev/null)"
+    done
+    printf "\n  Remove stale symlinks? [Y/n] "
+    read -r answer </dev/tty
+    case "$answer" in
+        [nN]*) ;;
+        *)
+            for link in "${stale_links[@]}"; do
+                local_short="${link#"$CLAUDE_DIR/"}"
+                local_backup="${link}.bak"
+                rm "$link"
+                if [ -e "$local_backup" ]; then
+                    mv "$local_backup" "$link"
+                    printf "  Restored %s from backup\n" "$local_short"
+                else
+                    printf "  Removed %s\n" "$local_short"
+                fi
+            done
+            ;;
+    esac
+elif [ ${#stale_links[@]} -gt 0 ]; then
+    # Non-interactive: remove stale links automatically
+    for link in "${stale_links[@]}"; do
+        rm "$link"
+        printf "  Removed stale symlink: %s\n" "${link#"$CLAUDE_DIR/"}"
+    done
+fi
+
 printf "\n"
-if [ -t 0 ]; then
+# install_settings detects no-ops internally and prints "already present — skipping".
+# Only prompt the user when there's actually something to merge.
+if [ -t 0 ] && install_settings_needed "$REPO_DIR" "$CLAUDE_DIR"; then
     printf "  Update ~/.claude/settings.json with hook registrations? [Y/n] "
     read -r answer </dev/tty
     case "$answer" in
         [nN]*) ;;
         *) install_settings "$REPO_DIR" "$CLAUDE_DIR" ;;
     esac
+elif [ -t 0 ]; then
+    printf "  settings.json: all hooks already present — skipping\n"
 else
     install_settings "$REPO_DIR" "$CLAUDE_DIR"
 fi

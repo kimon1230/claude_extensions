@@ -39,7 +39,7 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 │   ├── python.md               # venv usage, atomic edits around hooks, pathlib, type hints
 │   ├── javascript.md           # package manager detection, ES modules, TypeScript prefs
 │   └── shell.md                # $HOME over ~, guard tool availability, pipefail
-├── tests/                      # pytest test suite (402 tests)
+├── tests/                      # Test suite (402 Python + 90 shell installer + 27 shell statusline)
 ├── statusline-command.sh       # Custom status line: user@host:cwd + model + context bar
 └── settings.json.reference     # Reference settings.json for ~/.claude/settings.json
 ```
@@ -176,16 +176,28 @@ This repo is the canonical source for all Claude Code configuration. The install
 ./install.sh
 ```
 
-You'll be prompted for each component and for settings.json updates. The installer uses `jq` to merge hook entries from `settings.json.reference` into your existing `~/.claude/settings.json` without clobbering your custom settings (plugins, cleanup period, etc.). Duplicate hook entries are detected and skipped. A backup is created as `settings.json.bak` before any modification. If `jq` is not installed, the settings merge is skipped with a warning.
+You'll be prompted for each component and for settings.json updates. The installer uses `jq` to merge hook entries from `settings.json.reference` into your existing `~/.claude/settings.json` without clobbering your custom settings (plugins, cleanup period, etc.). A backup is created as `settings.json.bak` before any modification. If `jq` is not installed, the settings merge is skipped with a warning.
 
-### Upgrading from symlink-based install
+### Upgrading
 
-If you previously installed with an older version that symlinked `CLAUDE.md`, running `install.sh` again will automatically migrate: the symlink is removed, your original `CLAUDE.md` is restored from backup, and an `@import` line is added instead.
+`install.sh` doubles as an upgrade command. Running it on an existing install will:
+
+- **Skip already-installed components** — symlinks pointing to the correct source are detected and skipped without prompting.
+- **Offer new components** — hooks, skills, or rules added since your last install are prompted for installation.
+- **Clean up stale symlinks** — if a component was removed or renamed in the repo, broken symlinks in `~/.claude/` are detected and offered for removal.
+- **Replace stale settings.json entries** — all repo-managed hook entries (commands referencing `/.claude/hooks/`) are stripped and re-added from the current reference. This handles renamed hooks, changed command formats, and removed hooks. User hooks are preserved.
+- **Deduplicate settings.json** — duplicate hook entries left by older installer versions are collapsed.
+- **Update repo-managed statusLine** — if the statusLine references our script, it's updated to match the current reference. Custom statusLine configurations are preserved.
+- **Migrate old CLAUDE.md symlinks** — older versions symlinked `CLAUDE.md` directly; running `install.sh` again replaces the symlink with an `@import`, restoring your original content from backup.
+
+When everything is already current, the installer reports "already installed — skipping" for each component and exits without prompting.
 
 ### Updating
 
-Since hooks, skills, and rules are symlinked (not copied), pulling new changes from the repo takes effect immediately — no re-install needed. The `@import` for `CLAUDE.md` also resolves live from the repo. If a new hook is added, re-run `install.sh` to register it in `settings.json`.
+Since hooks, skills, and rules are symlinked (not copied), pulling new changes from the repo takes effect immediately — no re-install needed. The `@import` for `CLAUDE.md` also resolves live from the repo. Re-run `install.sh` after pulling only when new components are added or hook registrations change.
 
-To uninstall, run `./uninstall.sh` — it removes the `@import` line from `CLAUDE.md`, cleans up symlinks, and removes hook/statusline entries from `~/.claude/settings.json`. Your custom settings and original `CLAUDE.md` content are preserved.
+### Uninstalling
+
+Run `./uninstall.sh` — it discovers all symlinks in `~/.claude/` pointing into the repo, removes the `@import` block from `CLAUDE.md`, cleans up hook/statusline entries from `settings.json`, and offers to remove orphaned `.bak` files. Your custom settings and original `CLAUDE.md` content are preserved.
 
 See [DEVELOPER.md](DEVELOPER.md) for development setup, testing, and architecture notes.

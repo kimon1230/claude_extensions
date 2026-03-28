@@ -32,7 +32,15 @@ All notable changes to this project will be documented in this file.
 - **`/critical-review`** — renumbered to 8 steps (decision logging is step 5; non-approval path explicitly logs rejections).
 - **`CLAUDE.md` Code Quality** — overloaded paragraph broken into sub-bullets.
 - **`CLAUDE.md` Planning** — batch numbering convention: always start at 1, never 0.
-- **`install.sh`** — new `install_settings()` function: `jq`-based merge of hooks and statusLine from `settings.json.reference` into `~/.claude/settings.json`. Deduplicates by (matcher, commands) tuple. Backs up before modifying. Replaces the old "go read settings.json.reference" manual step.
+- **`install.sh`** — now fully supports upgrades in addition to fresh installs:
+  - `install_settings()` function: `jq`-based merge of hooks and statusLine from `settings.json.reference` into `~/.claude/settings.json`. Backs up before modifying.
+  - Already-installed symlinks detected and skipped without prompting (compares raw and resolved paths).
+  - Stale symlink cleanup: broken symlinks pointing into the repo (from removed/renamed components) are detected and offered for removal.
+  - Settings.json upgrade: repo-managed hook entries are stripped and re-added from the current reference on every run, handling renamed hooks, changed command formats, and removed hooks. User hooks are preserved.
+  - Duplicate hook entries from older installer versions are deduplicated.
+  - Repo-managed statusLine is updated to match the current reference; custom statusLine configurations are preserved.
+  - CLAUDE.md, settings.json, and component prompts all skip when already current — a fully up-to-date install produces no prompts.
+  - Extracted `merge_settings_json()` and `install_settings_needed()` helpers to eliminate logic duplication.
 - **`uninstall.sh`** — new `uninstall_settings()` function: removes hook entries pointing to `/.claude/hooks/` and statusLine from `~/.claude/settings.json`. Replaces old manual reminder.
 - **`settings.json.reference`** — added `PreToolUse` section for sensitive-file-guard (Read + Bash matchers).
 - **`/security-audit` synthesis** — now reports `php_detected` status alongside `web_app` and `iac_detected`.
@@ -58,7 +66,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **Shell test suites** — `tests/test_install.sh` (48 tests) and `tests/test_statusline.sh` (27 tests) covering installer, uninstaller, and status line
+- **Shell test suites** — `tests/test_install.sh` and `tests/test_statusline.sh` covering installer, uninstaller, and status line
 - `tests/test_format_python.py` — unit tests for format-python.sh venv resolution
 
 ### Changed

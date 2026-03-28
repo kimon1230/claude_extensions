@@ -574,6 +574,172 @@ SL
 install_settings "$settings_repo" "$settings_sl"
 assert_file_contains "settings-sl: custom statusLine preserved" "$settings_sl/settings.json" "my-custom-statusline.sh"
 
+# --- 34. Settings install: deduplicates entries from older installer versions ---
+
+settings_dedup="$tmpdir/settings_dedup"
+mkdir -p "$settings_dedup"
+# Simulate a settings.json with duplicate hook entries (as an older installer might create)
+cat > "$settings_dedup/settings.json" <<'DEDUP'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "my-custom-hook.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/sensitive-file-guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/sensitive-file-guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/sensitive-file-guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/format-python.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/format-python.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+DEDUP
+
+install_settings "$settings_repo" "$settings_dedup"
+# Duplicates should be collapsed to one each
+sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_dedup/settings.json" || true)
+# sensitive-file-guard appears in 2 PreToolUse entries in reference (Read and Bash matchers)
+# The dupes above are all Read matcher, so after dedup: 1 Read + 1 Bash = 2
+assert_eq "settings-dedup: sensitive-file-guard deduped" "2" "$sensitive_count"
+format_count=$(grep -c "format-python.sh" "$settings_dedup/settings.json" || true)
+assert_eq "settings-dedup: format-python deduped" "1" "$format_count"
+# User hook preserved
+assert_file_contains "settings-dedup: user hook preserved" "$settings_dedup/settings.json" "my-custom-hook.sh"
+
+# --- 35. Settings upgrade: stale hook entries removed on re-install ---
+
+settings_upgrade="$tmpdir/settings_upgrade"
+mkdir -p "$settings_upgrade"
+# Simulate settings.json with an old-style hook command that was changed in the reference
+cat > "$settings_upgrade/settings.json" <<'UPGRADE'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "my-custom-hook.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/old-removed-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/old-renamed-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+UPGRADE
+
+install_settings "$settings_repo" "$settings_upgrade"
+# Stale repo hooks should be gone
+assert_file_not_contains "settings-upgrade: old-removed-hook gone" "$settings_upgrade/settings.json" "old-removed-hook.py"
+assert_file_not_contains "settings-upgrade: old-renamed-hook gone" "$settings_upgrade/settings.json" "old-renamed-hook.sh"
+# User hook preserved
+assert_file_contains "settings-upgrade: user hook preserved" "$settings_upgrade/settings.json" "my-custom-hook.sh"
+# Current reference hooks present
+assert_file_contains "settings-upgrade: sensitive-file-guard added" "$settings_upgrade/settings.json" "sensitive-file-guard.py"
+assert_file_contains "settings-upgrade: format-python added" "$settings_upgrade/settings.json" "format-python.sh"
+
+# --- 36. Settings upgrade: changed command format replaced cleanly ---
+
+settings_cmd_change="$tmpdir/settings_cmd_change"
+mkdir -p "$settings_cmd_change"
+# Old format without python3 prefix
+cat > "$settings_cmd_change/settings.json" <<'CMDCHANGE'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/sensitive-file-guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+CMDCHANGE
+
+install_settings "$settings_repo" "$settings_cmd_change"
+# Old format stripped, new format added
+sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_cmd_change/settings.json" || true)
+assert_eq "settings-cmd-change: correct count after upgrade" "2" "$sensitive_count"
+# Verify it uses the new command format from reference
+assert_file_contains "settings-cmd-change: has python3 prefix" "$settings_cmd_change/settings.json" "python3"
+
 # --- Summary ---
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
