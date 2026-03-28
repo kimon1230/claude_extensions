@@ -110,6 +110,72 @@ install_claude_md_import() {
     printf "  CLAUDE.md: added @import for %s/CLAUDE.md\n" "$repo_dir"
 }
 
+install_settings() {
+    local repo_dir="$1"
+    local claude_dir="$2"
+    local settings_file="$claude_dir/settings.json"
+    local reference_file="$repo_dir/settings.json.reference"
+
+    if [ ! -f "$reference_file" ]; then
+        printf "  WARNING: %s not found — skipping settings install\n" "$reference_file" >&2
+        return 0
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        printf "  WARNING: jq not found — skipping settings.json merge (install jq and re-run)\n" >&2
+        return 0
+    fi
+
+    # Fresh install: just copy the reference file
+    if [ ! -f "$settings_file" ]; then
+        mkdir -p "$claude_dir"
+        cp "$reference_file" "$settings_file"
+        printf "  settings.json: copied from reference (fresh install)\n"
+        return 0
+    fi
+
+    # Merge: add hooks and statusLine from reference into existing settings
+    # Backup before modifying
+    cp "$settings_file" "${settings_file}.bak"
+    printf "  settings.json: backed up to settings.json.bak\n"
+
+    local ref_hooks ref_statusline existing_hooks merged
+    ref_hooks=$(jq '.hooks // {}' "$reference_file")
+    ref_statusline=$(jq '.statusLine // null' "$reference_file")
+
+    # Merge hooks: for each hook type (PreToolUse, PostToolUse, etc.),
+    # add entries from reference that don't already exist (match on command field)
+    merged=$(jq --argjson ref_hooks "$ref_hooks" --argjson ref_sl "$ref_statusline" '
+        # Merge hooks using reduce over hook type keys
+        .hooks = (
+            reduce ($ref_hooks | keys[]) as $hook_type (
+                (.hooks // {});
+                .[$hook_type] = (
+                    (.[$hook_type] // []) as $existing_entries |
+                    ($ref_hooks[$hook_type] // []) as $ref_entries |
+                    # For each ref entry, add if no existing entry has same matcher+command
+                    reduce ($ref_entries[]) as $ref_entry (
+                        $existing_entries;
+                        ($ref_entry | {matcher: (.matcher // ""), cmds: [.hooks[].command]}) as $ref_id |
+                        if any(.[]; {matcher: (.matcher // ""), cmds: [.hooks[].command]} == $ref_id)
+                        then .
+                        else . + [$ref_entry]
+                        end
+                    )
+                )
+            )
+        ) |
+        # Merge statusLine only if not already set
+        if $ref_sl != null and (.statusLine // null) == null then
+            .statusLine = $ref_sl
+        else .
+        end
+    ' "$settings_file")
+
+    printf '%s\n' "$merged" > "$settings_file"
+    printf "  settings.json: merged hooks and statusLine from reference\n"
+}
+
 # --source-only: allow tests to source this file for the guard functions
 # without executing the installer.
 if [ "${1:-}" = "--source-only" ]; then return 0 2>/dev/null || exit 0; fi
@@ -256,5 +322,16 @@ for entry in "${selected[@]}"; do
     printf "  Linked %s\n" "$label"
 done
 
-printf "\nDone. Review settings.json.reference for hook/statusline wiring:\n"
-printf "  %s/settings.json.reference\n" "$REPO_DIR"
+printf "\n"
+if [ -t 0 ]; then
+    printf "  Update ~/.claude/settings.json with hook registrations? [Y/n] "
+    read -r answer </dev/tty
+    case "$answer" in
+        [nN]*) ;;
+        *) install_settings "$REPO_DIR" "$CLAUDE_DIR" ;;
+    esac
+else
+    install_settings "$REPO_DIR" "$CLAUDE_DIR"
+fi
+
+printf "\nDone.\n"

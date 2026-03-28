@@ -54,6 +54,49 @@ uninstall_claude_md_import() {
     printf "  Removed @import from CLAUDE.md\n"
 }
 
+uninstall_settings() {
+    local settings_file="$1"
+
+    if [ ! -f "$settings_file" ]; then
+        return 0
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        printf "  WARNING: jq not found — skipping settings.json cleanup\n" >&2
+        return 0
+    fi
+
+    # Check if there's anything to remove
+    local has_hooks has_statusline
+    has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
+    has_statusline=$(jq 'if (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
+
+    if [ "$has_hooks" = "0" ] && [ "$has_statusline" = "0" ]; then
+        return 0
+    fi
+
+    # Backup before modifying
+    cp "$settings_file" "${settings_file}.bak"
+    printf "  settings.json: backed up to settings.json.bak\n"
+
+    local cleaned
+    cleaned=$(jq '
+        # Remove hook entries whose command contains $HOME/.claude/hooks/
+        .hooks = ((.hooks // {}) | to_entries | map(
+            .value = [.value[] | select(
+                (.hooks // []) | all(.command | tostring | contains("/.claude/hooks/") | not)
+            )]
+        ) | map(select(.value | length > 0)) | from_entries) |
+        # Remove hooks key entirely if empty
+        if (.hooks | length) == 0 then del(.hooks) else . end |
+        # Remove statusLine if it references our statusline script
+        if (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then del(.statusLine) else . end
+    ' "$settings_file")
+
+    printf '%s\n' "$cleaned" > "$settings_file"
+    printf "  settings.json: removed claude-extensions hook and statusLine entries\n"
+}
+
 # --source-only: allow tests to source for guard functions without executing main
 if [ "${1:-}" = "--source-only" ]; then return 0 2>/dev/null || exit 0; fi
 
@@ -178,7 +221,25 @@ main() {
         fi
     fi
 
-    printf "\nDone. You may also need to remove hook/statusline entries from ~/.claude/settings.json.\n"
+    # Clean up settings.json
+    local settings_file="$CLAUDE_DIR/settings.json"
+    if [ -t 0 ]; then
+        local has_hooks has_statusline
+        has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
+        has_statusline=$(jq 'if (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
+        if [ "$has_hooks" != "0" ] || [ "$has_statusline" != "0" ]; then
+            printf "\n  Remove hook/statusline entries from settings.json? [Y/n] "
+            read -r answer </dev/tty
+            case "$answer" in
+                [nN]*) ;;
+                *) uninstall_settings "$settings_file" ;;
+            esac
+        fi
+    else
+        uninstall_settings "$settings_file"
+    fi
+
+    printf "\nDone.\n"
 }
 
 main "$@"

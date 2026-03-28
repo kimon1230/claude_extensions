@@ -1,6 +1,8 @@
 ---
 name: security-audit
-description: Run a parallel subagent security audit of the codebase, a specific file/directory, or a set of changes. Use when you want a thorough security review before shipping.
+description: Use when you want a thorough security review of the codebase, a specific file/directory, or a set of changes before shipping.
+risk: safe
+risk-note: "audit is read-only; remediation phase applies source changes"
 argument-hint: "[scope] [compliance: pci-dss|hipaa|soc2|gdpr]"
 ---
 
@@ -35,6 +37,10 @@ The main session must compose the relevant subset of this context into each suba
 
 Check for IaC files: `*.tf` (Terraform), CloudFormation templates (`AWSTemplateFormatVersion`), `Pulumi.yaml`, Kubernetes manifests (files containing both `apiVersion:` and `kind:` where `kind` matches a known K8s resource — Pod, Deployment, Service, StatefulSet, Ingress, ConfigMap, Secret, etc. — or files co-located with `kustomization.yaml`), Helm charts (`Chart.yaml`). If found, set `iac_detected = true` and inform user: "Detected IaC files ([tool]) — enabling infrastructure configuration checks in Agent 4."
 
+### PHP Detection
+
+Check for `.php` files or `composer.json` in scope. If found, set `php_detected = true` and inform user: "Detected PHP project — enabling PHP-specific security checks in Agent 1."
+
 ### Compliance Context (Optional)
 
 If the user includes `compliance: <framework>` in their arguments (e.g., `/security-audit src/ compliance: hipaa`), set `compliance_framework` and confirm with the user. If the user mentions compliance in natural language (e.g., "we need HIPAA compliance"), infer the framework but always confirm before enabling compliance-specific checks: "I detected a reference to [framework] compliance. Should I enable [framework]-specific security checks?" Multiple frameworks can be comma-separated. Supported: `pci-dss`, `hipaa`, `soc2`, `gdpr`.
@@ -59,6 +65,19 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
   **If `compliance_framework` includes `gdpr`, also check:**
   - **Consent handling**: Verify data collection endpoints have explicit consent mechanisms before processing personal data.
 
+  **If `php_detected = true`, also check:**
+  - PHP type juggling: loose comparison (`==`) with `"0e..."` strings, `"0" == false`, `"" == 0` — flag security-sensitive comparisons using `==` instead of `===`
+  - `preg_replace` with `/e` modifier (RCE), `assert()` with string argument (code evaluation), `extract()` on user input (variable overwrite), `zip://` wrapper LFI
+  - `parse_url()` vs curl parsing discrepancy: double-`@` in URLs parsed differently, enabling SSRF bypass
+
+  **Encoding/parsing mismatch checks** (all languages):
+  - Unicode normalization bypass: normalization-sensitive operations (case-insensitive comparison, lowercasing for filter bypass) may not handle U+017F (ſ), U+212A (K), and similar codepoints consistently — verify input is Unicode-normalized before security checks
+  - Charset mismatches: Shift-JIS multi-byte SQL injection, non-breaking space (U+00A0) injection in query languages
+  - Go-specific: flag patterns like `if len(userInput) < maxLen` or `if len(token) == expected` where `len()` enforces security boundaries on user-supplied strings — `len()` returns byte count, not character count. Correct check: `utf8.RuneCountInString()`
+
+  **Prototype pollution** (JavaScript/TypeScript):
+  - Check for `__proto__`, `constructor.prototype` in user input reaching `Object.assign`, `lodash.merge`, or similar deep-merge functions
+
 - **Agent 2 — Authentication, Authorization & Session Management**: Broken auth flows, missing authorization checks on endpoints, IDOR, privilege escalation (horizontal and vertical), insecure session handling, JWT misuse (algorithm confusion, missing expiry, weak secrets), OAuth/OIDC misconfigurations, missing rate limiting on auth endpoints, account enumeration via error messages, insecure password storage, missing MFA considerations, session fixation, token leakage.
 
   **If `web_app = true`, also check:**
@@ -79,6 +98,13 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
   **If `compliance_framework` includes `soc2`, also check:**
   - Audit logging of access to sensitive resources, role-based access controls present.
 
+  **Additional auth/session attack patterns:**
+  - JWE token handling: if application processes 5-segment JWE tokens, verify it only accepts the intended token format; if JWE is not a supported format, reject 5-segment tokens
+  - Session cookie forgery via timestamp-seeded PRNG (`srand(time())`) — flag any use of predictable seeds for session-related randomness
+  - OAuth `redirect_uri` bypass variants: path traversal within allowed domain, fragment injection, subdomain matching tricks
+  - JWT Base64url leniency: verify the library validates strict Base64url encoding per RFC 7515 §2 — padding-stripped input may misparse the signature boundary
+  - Race conditions on auth/session operations: double-spend/balance bypass via concurrent requests, coupon/code single-use bypass, registration uniqueness bypass
+
 - **Agent 3 — Data Exposure & Cryptography**: Insecure cryptographic choices (MD5/SHA1 for passwords, ECB mode, weak key sizes, static IVs/nonces), missing encryption at rest/in transit, PII exposure in API responses, verbose error messages leaking internals, source maps in production, insecure randomness (Math.random for security), missing data classification, overly broad API response serialization (returning full objects instead of DTOs).
 
   **If `compliance_framework` includes `pci-dss`, also check:**
@@ -97,6 +123,14 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
   - **File upload bypasses**: Check for: double extension (`shell.php.jpg`), null byte in filename (`shell.php%00.jpg`), MIME type spoofing (Content-Type doesn't match actual file), magic byte injection (valid header prepended to malicious file), polyglot files (valid as multiple types), SVG with embedded JavaScript, XXE via Office documents (DOCX/XLSX are ZIP+XML), ZIP slip (`../../../etc/passwd` in archive paths), filename injection (shell metacharacters in filename), ImageMagick exploits. Verify: file extension allowlist, magic byte validation (JPEG=`FF D8 FF`, PNG=`89 50 4E 47`, PDF=`25 50 44 46`), files renamed to random UUIDs, stored outside webroot, served with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`.
   - **XXE parser configuration**: Verify XML parsers disable external entities per language: Java (`setFeature("disallow-doctype-decl", true)`, disable external general/parameter entities), Python (`lxml` with `resolve_entities=False, no_network=True`, or `defusedxml`), PHP (`libxml_disable_entity_loader(true)`), Node.js (DTD processing disabled), .NET (`DtdProcessing = DtdProcessing.Prohibit`, `XmlResolver = null`). Check indirect XML sources: Office documents, SVG files, SAML assertions, RSS/Atom feeds.
   - **GraphQL-specific attacks**: If GraphQL is used, check: introspection enabled in production (should be disabled), missing query depth limiting (recommend max 10 levels), missing query complexity/cost analysis, missing batching limits (operations per request). Flag if none of these controls are present.
+  - **SSRF additions** (merge with existing bypass list above): SSRF-to-Docker API (port 2375) RCE chain, gopher protocol for internal service exploitation
+  - **File upload + use timing window**: check for race conditions between file upload validation and file use (validate-then-use TOCTOU)
+
+  **Deserialization depth** (all projects, not just web):
+  - Java XMLDecoder: text-based deserialization, no gadget chain needed — flag any use of `XMLDecoder` on user-controlled input
+  - Castor XML `xsi:type` polymorphism enabling JNDI/RMI injection
+  - Python `pickle.loads()` / `cPickle.loads()` called on user-controlled data — check input provenance regardless of HMAC signing
+  - PHP serialization length manipulation via post-serialization filter expansion
 
   **If `iac_detected = true`, also check:**
   - **IAM/RBAC policies**: `Action: "*"` with `Resource: "*"`, `AdministratorAccess`, roles with `iam:PassRole` on `*`, missing conditions/scope restrictions.
@@ -171,6 +205,10 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
     - `Permissions-Policy` restricting unnecessary browser features
     - Flag any missing headers as **medium** findings.
 
+  - **CSP bypass patterns**: cloud platform domain whitelisting (`.run.app`, `.cloudfunctions.net` in `script-src`), `<base>` tag hijacking when `base-uri` directive is missing, `<link rel="prefetch">` scriptless exfiltration. Flag behavioral framework attribute execution (`hx-get`, `x-data`, `_`) only when attribute values are populated from unsanitized user input — mere presence is NOT a finding.
+  - **CSS-only data exfiltration**: via container queries + custom fonts (no JavaScript needed) — report as impact escalation on any identified CSS injection finding, not as a standalone finding
+  - **DOM clobbering**: named form elements (`name="location"`, `id="cookie"`) overriding global variables — flag when user-controlled HTML is rendered without sanitization that strips `name`/`id` attributes
+
   - **CORS configuration**: Check `Access-Control-Allow-Origin` — flag `*` (wildcard) on authenticated endpoints, flag dynamic origin reflection without allowlist validation, check `Access-Control-Allow-Credentials: true` is only used with specific origins (never with `*`), verify `Access-Control-Allow-Methods` and `Access-Control-Allow-Headers` are restrictive.
 
   - **Cookie security attributes**: Audit all `Set-Cookie` calls for:
@@ -220,6 +258,25 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
 > - **medium**: Exploitable but limited impact, or requires significant preconditions. Includes missing security hardening that enables other attacks.
 > - **low**: Defense-in-depth gap, informational, or best-practice violation with minimal direct exploitability.
 >
+>
+> **Rationalizations to Reject** — Do not accept these dismissals as justification for downgrading or omitting findings:
+> - "It's behind a VPN / internal only" — internal networks get breached; defense in depth applies
+> - "Only admins can reach this endpoint" — admin accounts get compromised; least privilege still matters
+> - "We sanitize input elsewhere" — verify the sanitization exists and covers this path; don't assume
+> - "It's just a dev/staging environment" — dev environments often mirror prod data and credentials
+> - "The framework handles that automatically" — verify the framework config; defaults aren't always secure
+> - "We'll fix it before launch" — security debt compounds; fix now or track with a deadline
+> - "No attacker would find this" — security through obscurity is not a control
+> - "It only runs in CI" — CI environments have secrets, network access, and deploy permissions
+> - "The algorithm is widely used / industry standard" — widespread adoption ≠ secure in context; watch for dismissals like "we use bcrypt — except this one legacy endpoint" that concede the exception while waving it off
+>
+> **Red Flags — STOP and Re-examine** — If you catch yourself thinking any of these, stop and reconsider:
+> - "This looks like standard auth code, probably fine" — STOP. Auth code is where the most critical bugs live.
+> - "I don't see any obvious injection points" — STOP. The non-obvious ones are the ones that ship to production.
+> - "The input is coming from another internal service" — STOP. Internal services get compromised. Validate at every trust boundary.
+> - "This crypto code matches common patterns" — STOP. Common patterns are commonly misused. Verify parameters, modes, and key sizes.
+> - "I've already checked this type of issue in another file" — STOP. Each file has its own context. Check again.
+>
 > Return NO other text, except: if you encounter tool errors or cannot read required files, report that as your first finding with severity "critical" and category "tooling".
 
 ## 3. Synthesize Results
@@ -230,7 +287,7 @@ After all subagents complete, the main session:
 - Sorts by severity: critical > high > medium > low
 - If a subagent returned zero findings, note that to the user (this is a good sign for that category)
 - Present a consolidated report with:
-  - **Summary**: total findings by severity, overall risk assessment. Include the threat context summary at the top. If `web_app = true`, note which web-specific checks were performed. If `iac_detected = true`, note which IaC tools were reviewed.
+  - **Summary**: total findings by severity, overall risk assessment. Include the threat context summary at the top. If `web_app = true`, note which web-specific checks were performed. If `iac_detected = true`, note which IaC tools were reviewed. If `php_detected = true`, note that PHP-specific checks were enabled.
   - **Findings**: the deduplicated list
   - **Positive observations**: security controls that are correctly implemented (max 3 bullet points — keep it brief)
   - **Compliance coverage** *(only if `compliance_framework` is set)*: list which framework controls were checked and any gaps. Add disclaimer: "This review checks for common technical controls associated with [framework]. It is not a substitute for formal compliance assessment by a qualified auditor."
@@ -241,6 +298,11 @@ If the user wants to fix issues:
 - For **critical** and **high** findings: offer to fix them immediately, starting with critical
 - For **medium** and **low** findings: list them as recommendations the user can address
 - Apply fixes in the main session (not subagents), following existing code patterns
+- **BEFORE/AFTER verification** for each fix:
+  1. **BEFORE**: Record the current failing state. For testable findings: the specific command, test, or check that demonstrates the issue, with output. For non-testable findings (naming, dead code, structural issues): a quoted code snippet with file path and function/symbol anchor (e.g., "in function `validate_user` in `auth.py`") — do not use line numbers for BEFORE evidence, as they shift after edits. Note: the findings Location field format (which may include line numbers) is unchanged.
+  2. **FIX**: Apply the fix.
+  3. **AFTER**: For testable findings: re-run the same command/test/check and verify it now passes, with output as evidence. For non-testable findings: show the modified code snippet at the same location.
+  4. If AFTER still fails (testable) or the code change doesn't address the finding (non-testable), the fix is incomplete — do not mark the finding as resolved.
 - After fixing, run a targeted follow-up review (step 5)
 
 ## 5. Follow-Up Rounds
@@ -262,3 +324,14 @@ When the stop condition is met, present a final summary:
 - Do not begin further work unless the user explicitly requests it.
 
 If the user does not approve fixes at any point, present the findings as a reference and end. Do not modify any files.
+
+## Output Contract
+
+The final synthesized report MUST include all of the following:
+
+- **Scope and threat context summary**: what was audited, trust boundaries identified, data sensitivity classification
+- **Findings table**: each finding with severity, category (OWASP/CWE), location, issue, impact, fix, and evidence (code snippet, max 3 lines)
+- **Aggregate counts**: total findings broken down by severity (critical/high/medium/low)
+- **Compliance status** *(conditional)*: include only when a `compliance_framework` argument was provided
+- **Verdict**: one of `pass` (0 critical, 0 high), `conditional-pass` (0 critical, 1+ high), or `fail` (1+ critical)
+- **Remediation offer**: ask the user if they want to fix critical/high findings

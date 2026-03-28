@@ -1,6 +1,8 @@
 ---
 name: critical-review
-description: Run a parallel subagent critical review of the current plan or document. Use when you want structured feedback before implementation.
+description: Use when you want structured feedback on a plan or document before implementation.
+risk: safe
+risk-note: "writes to ~/.claude/plans/ only, with user consent"
 argument-hint: "[plan-file]"
 ---
 
@@ -39,7 +41,17 @@ This skill must only be invoked from the main session, never from a subagent.
 
 4. If the user approves incorporating feedback: **the main session** (not a subagent) updates the plan document with a new revision and notes what changed.
 
-5. **Iterate until clean.** After applying fixes, automatically start the next round:
+5. **Decision logging** (runs after every user response — approval, rejection, or deferral):
+   Append each decision to `~/.claude/plans/<project-name>/decision-log.md`. Create the file if it doesn't exist. Append-only — never overwrite existing entries. Format per entry:
+   ```
+   ## YYYY-MM-DD — [Plan filename]
+   - **Finding:** [1-sentence summary]
+   - **Decision:** accepted / rejected / deferred
+   - **Rationale:** [why — from the user's response or the discussion]
+   - **Alternatives considered:** [if any were discussed]
+   ```
+
+6. **Iterate until clean.** After applying fixes, automatically start the next round:
    - Spawn **2 parallel subagents** that review ONLY the sections changed in the latest revision:
      - **Agent A — Correctness, Logic & Edge Cases**
      - **Agent B — Feasibility, Testing & Completeness**
@@ -48,6 +60,16 @@ This skill must only be invoked from the main session, never from a subagent.
    - **Stop condition**: a round produces **0 critical and 0 major** findings. Minor-only findings do not block — note them and declare the plan ready.
    - **Safety valve**: max 7 total rounds (1 initial + 6 follow-ups). If critical/major issues persist after 7 rounds, STOP — report what keeps recurring and flag to the user that the plan may need structural rework rather than incremental fixes.
 
-6. When the stop condition is met, inform the user the review is complete and the plan is ready for implementation. Do not begin implementation unless the user explicitly requests it.
+7. When the stop condition is met, inform the user the review is complete and the plan is ready for implementation. Do not begin implementation unless the user explicitly requests it.
 
-7. If the user does not approve changes at any point, present the findings as a reference and end. Do not modify any files.
+8. If the user does not approve changes at any point, present the findings as a reference, log the rejections (step 5), and end. Do not modify any files.
+
+## Output Contract
+
+The final synthesized report MUST include all of the following:
+
+- **Document reviewed**: path to the plan or document
+- **Findings table**: each finding with severity, location, issue, and fix
+- **Aggregate counts**: total findings broken down by severity (critical/major/minor)
+- **Verdict**: one of `clean` (0 critical, 0 major) or `needs-revision` (1+ critical or major)
+- **Change summary** *(conditional)*: include only when revisions were applied; omit when user declines changes

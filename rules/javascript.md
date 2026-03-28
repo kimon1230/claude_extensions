@@ -1,3 +1,15 @@
+---
+paths:
+  - "**/*.js"
+  - "**/*.ts"
+  - "**/*.jsx"
+  - "**/*.tsx"
+  - "**/*.mjs"
+  - "**/*.cjs"
+  - "**/*.mts"
+  - "**/*.cts"
+---
+
 # JavaScript/TypeScript Projects
 
 ## Package Manager

@@ -1,0 +1,4 @@
+[allowlist]
+paths = [
+"skills/security-audit/SKILL.md"
+]

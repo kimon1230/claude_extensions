@@ -1,6 +1,7 @@
 ---
 name: code-review
-description: Run a parallel subagent code review of files, changes, or the entire project. Reviews architecture, code quality, correctness, performance, and maintainability from a senior engineer's perspective.
+description: Use when you want a thorough code review of files, changes, or the entire project before shipping.
+risk: safe
 argument-hint: "[file/dir/changes]"
 ---
 
@@ -84,6 +85,11 @@ Spawn 5 subagents. Each agent reviews from a **senior distinguished engineer's p
   - Documentation — missing context for non-obvious decisions (why, not what), misleading comments
   - Dependency health — too many deps for the functionality, abandoned/unmaintained libraries, major version lag. Note: CVE/vulnerability scanning is `/security-audit`'s job — this agent focuses on maintenance burden only.
   - Migration difficulty — if this code needs to change, how hard will it be?
+  - Mock quality — flag these anti-patterns in test files:
+    - Mock-heavy tests: mock/stub setup lines outnumber assertion lines by more than 3:1 per test function. Scope: count only lines inside `it()`/`test()`/`test_*()` function bodies. Exclude `beforeEach`/`beforeAll`/`setup*`/`fixture*` at any nesting level, `describe()` wrappers, and conftest.py.
+    - Missing real module import: test files that mock a module's interface but never import or exercise the real implementation
+    - Behavioral-only assertions: all assertions are `toHaveBeenCalled`/`assert_called_with` with no value assertions (`assertEqual`, `toBe`, `toEqual`) — verifies wiring, not correctness
+    - Over-mocked integration tests: tests labeled as "integration" that mock all external dependencies (defeating the purpose)
   - This agent does NOT review code correctness (that's Agent 3) or performance (that's Agent 4).
 
 **Each subagent's prompt MUST include these instructions verbatim:**
@@ -96,12 +102,28 @@ Spawn 5 subagents. Each agent reviews from a **senior distinguished engineer's p
 > - **Category**: short label (e.g., "Complexity", "Dead Code", "N+1 Query", "God Function", "Missing Tests")
 > - **Location**: file path and line number or function name
 > - **Issue**: one-sentence description of the problem and why it matters (e.g., "function handles both validation and persistence, making it impossible to test either in isolation" not just "function does too much")
+> - **Risk**: HIGH | MED | LOW — blast radius of the finding. HIGH: public API surface, auth/security-critical path, data migration, or shared utility in a common/shared/utils package. MED: internal shared module (used by more than one sibling), configuration change, or test infrastructure. LOW: leaf module (single-use helper, private to one package), documentation, or cosmetic change.
 > - **Suggestion**: concrete remediation — state what to do, not "consider" or "review" (e.g., "extract lines 45-80 into a `validate_input()` function" not "consider refactoring")
 >
 > Severity guide:
 > - **critical**: Will cause bugs in production, data corruption, or makes the codebase unmaintainable. Must fix before shipping.
 > - **major**: Significant design flaw, substantial tech debt, or correctness risk that will bite you later. Should fix.
 > - **minor**: Style/convention issue, minor improvement, or defense-in-depth. Nice to fix but non-blocking.
+>
+> **Rationalizations to Reject** — Do not accept these dismissals as justification for downgrading or omitting findings:
+> - "It works" — correctness is necessary but not sufficient; maintainability and clarity matter
+> - "It's just a prototype / we'll refactor later" — prototypes become production; refactors rarely happen
+> - "Nobody else touches this code / it's only called from one place" — people leave, teams change, call sites multiply; design for the interface, not the current caller or author
+> - "The tests pass" — tests can be incomplete or wrong; passing tests don't prove correctness
+> - "It's how the old code did it" — legacy patterns aren't automatically correct; evaluate on merit
+> - "Performance doesn't matter here" — maybe, but O(n²) in a loop is still a bug waiting for data growth
+>
+> **Red Flags — STOP and Re-examine** — If you catch yourself thinking any of these, stop and reconsider:
+> - "This file looks fine, I'll skim it" — STOP. Read it. Skimming misses subtle bugs.
+> - "The function is small, it can't have issues" — STOP. Size doesn't correlate with correctness.
+> - "I haven't read all files in scope yet, but I'll stop early" — STOP. Finish reading the full scope before concluding. Hitting the 10-item cap is fine; abandoning unread files is not.
+> - "This is just boilerplate / glue code" — STOP. Glue code is where integration bugs hide.
+> - "I don't fully understand this, but it looks okay" — STOP. If you don't understand it, you can't review it. Read the context.
 >
 > Return NO other text, except: if you encounter tool errors or cannot read required files, report that as your first finding with severity "critical" and category "tooling".
 
@@ -110,7 +132,7 @@ Spawn 5 subagents. Each agent reviews from a **senior distinguished engineer's p
 After all subagents complete, the main session:
 - Deduplicates overlapping findings (same root cause reported by multiple agents)
 - Merges related findings (e.g., multiple instances of the same pattern)
-- Sorts by severity: critical > major > minor
+- Sorts by severity (critical > major > minor), then by risk (HIGH > MED > LOW) within same severity
 - If a subagent returned zero findings, note that to the user (this is a good sign for that category)
 - Present a consolidated report with:
   - **Summary**: total findings by severity, overall risk assessment. Note the detected language/framework from Section 1.
@@ -125,6 +147,11 @@ If the user wants to fix issues:
 - Group related fixes into coherent batches (don't fix one naming issue at a time — batch all naming fixes together)
 - For **minor** findings: list them as recommendations the user can address
 - Apply fixes in the main session (not subagents), following existing code patterns
+- **BEFORE/AFTER verification** for each fix:
+  1. **BEFORE**: Record the current failing state. For testable findings: the specific command, test, or check that demonstrates the issue, with output. For non-testable findings (naming, dead code, structural issues): a quoted code snippet with file path and function/symbol anchor (e.g., "in function `validate_user` in `auth.py`") — do not use line numbers for BEFORE evidence, as they shift after edits. Note: the findings Location field format (which may include line numbers) is unchanged.
+  2. **FIX**: Apply the fix.
+  3. **AFTER**: For testable findings: re-run the same command/test/check and verify it now passes, with output as evidence. For non-testable findings: show the modified code snippet at the same location.
+  4. If AFTER still fails (testable) or the code change doesn't address the finding (non-testable), the fix is incomplete — do not mark the finding as resolved.
 - Run tests after each batch of fixes
 - After fixing, run a targeted follow-up review (Section 5)
 
@@ -147,3 +174,13 @@ When the stop condition is met, present a final summary:
 - Do not begin further work unless the user explicitly requests it.
 
 If the user does not approve fixes at any point, present the findings as a reference and end. Do not modify any files.
+
+## Output Contract
+
+The final synthesized report MUST include all of the following:
+
+- **Scope summary**: what was reviewed (files, directories, changes, or entire project)
+- **Findings table**: each finding with severity, risk (HIGH/MED/LOW), category, location, issue, and suggestion — sorted by severity, then risk within same severity
+- **Aggregate counts**: total findings broken down by severity (critical/major/minor)
+- **Verdict**: one of `pass` (0 critical, 0 major), `conditional-pass` (0 critical, 1+ major), or `fail` (1+ critical)
+- **Remediation offer**: ask the user if they want to fix critical/major findings

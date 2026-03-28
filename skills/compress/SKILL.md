@@ -1,6 +1,7 @@
 ---
 name: compress
 description: Manually compress session-progress entries, bypassing automatic threshold checks. Use when you want to force compression on demand.
+risk: safe
 ---
 
 # Compress Session Progress

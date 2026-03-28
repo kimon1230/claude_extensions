@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5] - 2026-03-27
+
+### Added
+
+- **`sensitive-file-guard.py` (PreToolUse hook)** — blocks reads of `.env`, SSH keys, credentials, AWS configs, and package tokens. Intercepts both `Read` tool and `Bash` commands via `shlex.split()` tokenization. Case-insensitive basename matching with explicit allowlists (`.env.example`, `.envrc`). `*.key` requires keyword guard to avoid false positives. 83 tests.
+- **Output Contracts** for `/code-review`, `/critical-review`, `/security-audit` — each skill now defines the required structure of its final synthesized report (findings table, aggregate counts, verdict, remediation offer).
+- **Rationalizations to Reject** — 9 security dismissals injected into `/security-audit` subagent prompts ("It's behind a VPN", "Only admins can reach this", etc.) and 6 code quality dismissals into `/code-review`.
+- **Red Flags** — thought-pattern watchlists injected into `/security-audit` (5 items) and `/code-review` (5 items) targeting the agent's own corner-cutting impulses.
+- **CTF-sourced detection patterns** for `/security-audit` — PHP attack surface (gated behind `php_detected` flag), encoding/parsing mismatches (Unicode normalization, Shift-JIS, U+00A0), Go `len()` byte/rune confusion, prototype pollution, JWE token handling, auth race conditions, deserialization depth (XMLDecoder, Castor XML, pickle, PHP serialization), SSRF-to-Docker/gopher, CSP bypass taxonomy, DOM clobbering, behavioral framework XSS narrowing.
+- **Implementer status protocol** for `/implement-batch` — subagents report `STATUS: DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, or `BLOCKED`. Main session handles each status with defined escalation paths.
+- **Contradiction detection** for `/implement-batch` — scans subagent output for phrases like "requires manual", "should work", "TODO" alongside success claims. Catches the "claims done but admits failure" pattern.
+- **Cascading-fix escalation** for `/implement-batch` — 3-strike rule. If fixes keep breaking previously-passing modules, stop and flag as architectural issue.
+- **Complexity gate** for `/implement-batch` — flags tasks meeting 2-of-3 conditions (>5 files, >3 acceptance criteria, cross-module dependencies) before spawning subagents. Soft gate — user can override.
+- **Decision logging** for `/critical-review` — appends accept/reject/defer decisions to `decision-log.md` with rationale. Triggers on all user response paths.
+- **Task Delivery States** in `CLAUDE.md` — mental model for task progression (intake → planning → executing → validating → reviewing → done / blocked).
+- **Subagent context isolation rule** in `CLAUDE.md` — always paste full task text into subagent prompts, never make subagents read plan files.
+- **Blast radius risk labeling** for `/code-review` — findings include `Risk: HIGH|MED|LOW` based on structural heuristics. Secondary sort by risk within same severity.
+- **Mock quality detection** for `/code-review` — Agent 5 now flags mock-heavy tests (3:1 ratio), missing real module imports, behavioral-only assertions, and over-mocked integration tests.
+- **BEFORE/AFTER remediation verification** for `/code-review` and `/security-audit` — records failing state before fix, verifies passing state after. Uses function/symbol anchors for non-testable findings.
+
+### Changed
+
+- **Skill descriptions** — all 6 skills rewritten for CSO compliance (trigger conditions only, no workflow summaries). Prevents Claude from shortcutting skill bodies.
+- **Skill frontmatter** — all 6 skills now include `risk: safe|critical` field and optional `risk-note`.
+- **Rules frontmatter** — `python.md`, `javascript.md`, `shell.md` now include `paths` frontmatter for file-type-specific loading.
+- **`/implement-batch` step 4** — split into 4 (triage: status + contradiction), 4b (consistency review), 4c (validation).
+- **`/implement-batch` step 7** — phase gate: recommends new session for batch ≥ 3.
+- **`/critical-review`** — renumbered to 8 steps (decision logging is step 5; non-approval path explicitly logs rejections).
+- **`CLAUDE.md` Code Quality** — overloaded paragraph broken into sub-bullets.
+- **`CLAUDE.md` Planning** — batch numbering convention: always start at 1, never 0.
+- **`install.sh`** — new `install_settings()` function: `jq`-based merge of hooks and statusLine from `settings.json.reference` into `~/.claude/settings.json`. Deduplicates by (matcher, commands) tuple. Backs up before modifying. Replaces the old "go read settings.json.reference" manual step.
+- **`uninstall.sh`** — new `uninstall_settings()` function: removes hook entries pointing to `/.claude/hooks/` and statusLine from `~/.claude/settings.json`. Replaces old manual reminder.
+- **`settings.json.reference`** — added `PreToolUse` section for sensitive-file-guard (Read + Bash matchers).
+- **`/security-audit` synthesis** — now reports `php_detected` status alongside `web_app` and `iac_detected`.
+
 ## [0.4] - 2026-03-13
 
 ### Added

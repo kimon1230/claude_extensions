@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/*.sh"
+  - "**/*.bash"
+---
+
 # Shell Scripts
 
 ## Conventions
