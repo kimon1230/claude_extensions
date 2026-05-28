@@ -35,7 +35,9 @@ Language detection shapes agent behavior — agents should apply language-idioma
 
 ## 2. Round 1 — Spawn Parallel Subagents
 
-Spawn 5 subagents. Each agent reviews from a **senior distinguished engineer's perspective** — not looking for vulnerabilities (that's `/security-audit`), but evaluating whether this code is well-designed, maintainable, and correct.
+Spawn 5 subagents. Spawn Agent 1 (Architecture) and Agent 3 (Correctness) **using the `opus` model**; spawn Agent 2 (Quality/Readability), Agent 4 (Performance), and Agent 5 (Maintainability) **using the `sonnet` model** — the higher-stakes architecture and correctness passes get the stronger model. (`CLAUDE_CODE_SUBAGENT_MODEL`, if set in the environment Claude launches subagents under, overrides these per-agent choices.)
+
+Each agent reviews from a **senior distinguished engineer's perspective** — not looking for vulnerabilities (that's `/security-audit`), but evaluating whether this code is well-designed, maintainable, and correct.
 
 - **Agent 1 — Architecture & Design** (module-level and above):
   - Separation of concerns — are responsibilities cleanly divided?
@@ -92,12 +94,12 @@ Spawn 5 subagents. Each agent reviews from a **senior distinguished engineer's p
     - Over-mocked integration tests: tests labeled as "integration" that mock all external dependencies (defeating the purpose)
   - This agent does NOT review code correctness (that's Agent 3) or performance (that's Agent 4).
 
-**Each subagent's prompt MUST include these instructions verbatim:**
-> Read the files in scope. For context, you may read up to 5 additional files (imports, configs, shared utilities) directly referenced by the scoped files. Do NOT scan the entire codebase.
+**Each subagent's prompt MUST be assembled verbatim from the shared fragments in `~/.claude/rules/review-output-contract.md` plus this skill's domain-specific content.** Read that file (when working inside the `claude_extensions` repo itself it is also at `rules/review-output-contract.md`) and inline the named fragment in place of each `<<shared:…>>` marker below; inline every other line exactly as written:
+> <<shared:scope-and-context>>
 >
 > Review from a **senior distinguished engineer's perspective**. For each issue found, verify it is a genuine problem — not a reasonable trade-off for this codebase's context. Check if there is a project convention or framework constraint that justifies the pattern before flagging it.
 >
-> Return findings as a numbered list, max 10 items, highest severity first. Each item must have exactly these fields:
+> <<shared:findings-format>>
 > - **Severity**: critical | major | minor
 > - **Category**: short label (e.g., "Complexity", "Dead Code", "N+1 Query", "God Function", "Missing Tests")
 > - **Location**: file path and line number or function name
@@ -125,7 +127,7 @@ Spawn 5 subagents. Each agent reviews from a **senior distinguished engineer's p
 > - "This is just boilerplate / glue code" — STOP. Glue code is where integration bugs hide.
 > - "I don't fully understand this, but it looks okay" — STOP. If you don't understand it, you can't review it. Read the context.
 >
-> Return NO other text, except: if you encounter tool errors or cannot read required files, report that as your first finding with severity "critical" and category "tooling".
+> <<shared:closing-instruction>>
 
 ## 3. Synthesize Results
 
@@ -158,10 +160,10 @@ If the user wants to fix issues:
 ## 5. Follow-Up Rounds
 
 After applying fixes, automatically verify them:
-- Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context:
+- Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context, **both using the `opus` model** (fix verification is high-stakes; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
   - **Agent A — Architecture, Quality & Correctness** (combines agents 1-3 focus areas)
   - **Agent B — Performance, Maintainability & Testing** (combines agents 4-5 focus areas, plus checking that fixes didn't introduce new issues)
-- Each subagent's prompt MUST include the full verbatim format template from Section 2, with only the first line replaced: "Review ONLY the following changed files/sections: [list]. Read at most 3 additional context files. Max 5 items. Also verify that the applied fixes are correct and complete — check for regressions." All other instructions (severity guide, field format, "Return NO other text") remain unchanged.
+- Each subagent's prompt MUST include the full verbatim format template from Section 2 (assembled from `~/.claude/rules/review-output-contract.md` as described there), with only the first line (the `<<shared:scope-and-context>>` fragment) replaced: "Review ONLY the following changed files/sections: [list]. Read at most 3 additional context files. Max 5 items. Also verify that the applied fixes are correct and complete — check for regressions." All other instructions (severity guide, field format, `<<shared:findings-format>>`, `<<shared:closing-instruction>>`) remain unchanged.
 - Synthesize and present to user.
 - **Stop condition**: a round produces **0 critical and 0 major** findings. Minor findings do not block — note them and declare the review complete.
 - **Safety valve**: max 3 follow-up rounds (not counting the initial 5-agent round). If critical/major issues persist after 3 rounds, STOP — report what keeps recurring and flag that the recurring issues may require broader refactoring beyond the current review scope. Present remaining findings as a reference list.

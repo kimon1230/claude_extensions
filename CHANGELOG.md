@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6]
+
+Harness modernization for current Claude Code (CLI 2.1.x). All 6 batches implemented and validated. Plan: `~/.claude/plans/claude_extensions/harness-modernization-20260527.md`.
+
+**Existing installs:** re-run `install.sh` to pick up the hook-wiring change (re-merges `settings.json` — moves auto-capture to `SessionEnd`, drops the removed `ref-scorer` hook — and cleans up symlinks from removed components).
+
+### Added
+
+- **`session-init.py` re-injects persisted context** on session start/resume and after native compaction (`source: "compact"`) — emits a recency-ordered summary of recent `session-progress.md` entries via `additionalContext` (stdout JSON, 4 KB cap, source-gated; diagnostics stay on stderr). Closes the write-only loop so persisted status returns to the model automatically instead of only being written to disk. No `UserPromptSubmit` fallback needed (Batch 1 validated that `SessionStart` re-fires on compaction).
+
+### Removed
+
+- **Context-compression subsystem** — deleted `hooks/lib/compressor.py` (4-tier Active→Compressed→Archived→Dropped rotation), the `/compress` skill, the `ref-scorer.py` PostToolUse hook + `ref_scorer_mod.py`, and `hooks/lib/ref_tracker.py`. An audit found the compressor had **never fired in 29 sessions** (no `last_compression` key, no `archive.md`, no `## Compressed Context` section) and its tiers were write-only; native context compaction now summarizes the live conversation. Removed the `ref-scorer` entry from `settings.json.reference` and ~125 associated tests.
+- `session-init.py` no longer computes active/stale counts or triggers compression — it increments `session_count` and logs a plain entry count.
+- `auto-capture.py` no longer writes `scores` to `ref-cache.json` (dead data with no remaining consumer).
+
+### Changed
+
+- `README.md` statusline example model label `Sonnet 4.6 → Opus 4.7`; README/DEVELOPER updated to drop the removed subsystem.
+- **`auto-capture` moved from the `Stop` hook to `SessionEnd`** — runs once at session teardown instead of after every response. Refactored into a reusable `capture(workdir)` that resolves the project dir from `CLAUDE_PROJECT_DIR` (fallback cwd) and `chdir`s before running git, fixing a non-project-CWD silent no-op; captures on all SessionEnd reasons (reason is logging-only, parsed best-effort so malformed/empty stdin never suppresses a capture).
+- **Per-subagent model selection in the multi-agent skills** — `/code-review`, `/security-audit`, `/critical-review`, and `/implement-batch` now spawn each subagent with an explicit `model`: `opus` for the higher-stakes passes (architecture, correctness, injection/auth/crypto, implementers) and `sonnet` for the rest. Review/audit agents never default to `haiku`. `CLAUDE_CODE_SUBAGENT_MODEL` overrides these. Documented the mapping in DEVELOPER.md.
+- **Shared review output-contract fragments** — extracted the boilerplate that is identical verbatim between the `/code-review` and `/security-audit` subagent prompts (scope/context opening, findings-list-format line, closing instruction) into `rules/review-output-contract.md`; each skill inlines the fragments at `<<shared:…>>` markers. Audit found the field list, severity scale, rationalizations, and red flags are intentionally domain-specific (not duplicated), so they stay per-skill; `/critical-review` reviews plans and does not consume the fragments. Added `tests/test_review_contract.py`.
+
+### Fixed
+
+- `tests/test_fileutil.py` — moved a module-level assignment below the deferred import to clear a long-standing ruff E402.
+
 ## [0.5] - 2026-03-27
 
 ### Added

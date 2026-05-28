@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -11,8 +12,8 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib.entries import Entry, parse_entries, serialize_entries
-from lib.fileutil import atomic_write, safe_read_json, safe_write_json
-from lib.paths import get_ref_cache_path, get_session_progress_path
+from lib.fileutil import atomic_write
+from lib.paths import get_session_progress_path
 from lib.scribe import classify_changes, get_diff_name_status, get_diff_stat, parse_name_status
 
 # Pattern matching ## Auto-captured section header
@@ -58,8 +59,29 @@ def _deduplicate(
     return kept
 
 
-def main() -> None:
-    """Auto-capture uncommitted changes into session-progress.md."""
+def capture(workdir: str | None = None) -> str | None:
+    """Capture uncommitted git changes into ``session-progress.md``.
+
+    Resolves the working directory from ``workdir`` → ``CLAUDE_PROJECT_DIR`` →
+    the current directory, then ``chdir``s there for the duration of the call.
+    A single ``chdir`` (rather than threading ``cwd=`` through every call) makes
+    both the direct git invocations here and the ``scribe`` git helpers run in
+    the project, and keeps project-name/path resolution correct. The original
+    cwd is always restored.
+
+    Returns a short summary string, or ``None`` when there is nothing to capture.
+    """
+    workdir = workdir or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(workdir)
+    except OSError:
+        print(
+            f"auto-capture: cannot enter {os.path.basename(workdir.rstrip('/')) or workdir}",
+            file=sys.stderr,
+        )
+        return None
+
     try:
         # 1. Check if inside a git repo
         result = subprocess.run(
@@ -68,7 +90,11 @@ def main() -> None:
             text=True,
         )
         if result.returncode != 0:
-            return
+            print(
+                "auto-capture: not inside a git repository — nothing captured",
+                file=sys.stderr,
+            )
+            return None
 
         # 2. Check for uncommitted changes
         result = subprocess.run(
@@ -77,12 +103,12 @@ def main() -> None:
             text=True,
         )
         if result.returncode != 0 or not result.stdout.strip():
-            return
+            return None
 
         # 3. Get diff name-status
         name_status_output = get_diff_name_status()
         if not name_status_output.strip():
-            return
+            return None
 
         # 4. Get diff stat
         stat_output = get_diff_stat()
@@ -93,7 +119,7 @@ def main() -> None:
 
         # 6. Exit if no entries
         if not new_entries:
-            return
+            return None
 
         # 7-8. Load and parse existing session-progress.md
         progress_path = get_session_progress_path()
@@ -119,7 +145,7 @@ def main() -> None:
 
         # 10. Exit if nothing new after dedup
         if not new_entries:
-            return
+            return None
 
         # 11. Generate UUIDs
         for entry in new_entries:
@@ -144,17 +170,35 @@ def main() -> None:
 
         atomic_write(progress_path, final_content)
 
-        # 14. Update ref-cache.json with initial score=1
-        cache_path = get_ref_cache_path()
-        cache = safe_read_json(cache_path, backup_path=cache_path + ".bak")
-        scores = cache.get("scores", {})
-        if not isinstance(scores, dict):
-            scores = {}
-        for entry in new_entries:
-            if entry.id:
-                scores[entry.id] = 1
-        cache["scores"] = scores
-        safe_write_json(cache_path, cache)
+        count = len(new_entries)
+        return f"captured {count} entr{'y' if count == 1 else 'ies'}"
+    finally:
+        os.chdir(orig_cwd)
 
+
+def main() -> None:
+    """SessionEnd hook entry point.
+
+    Reads the SessionEnd payload best-effort — ``reason`` is used only for the
+    stderr log line; capture runs on every reason — then delegates to
+    :func:`capture`. Never raises.
+    """
+    reason = ""
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                reason = str(data.get("reason", "") or "")
+    except Exception:
+        reason = ""
+
+    try:
+        summary = capture()
+        if summary:
+            print(
+                f"auto-capture [{reason or 'session-end'}]: {summary}",
+                file=sys.stderr,
+            )
     except Exception as exc:
         print(f"auto-capture: {type(exc).__name__}", file=sys.stderr)

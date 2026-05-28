@@ -16,7 +16,7 @@ This skill must only be invoked from the main session, never from a subagent.
    c. List files in `~/.claude/plans/<project-name>/`, sorted by modification time (most recent first). If the directory does not exist or contains no `.md` files, tell the user: "No plan files found in `~/.claude/plans/<project-name>/`. Please specify a file path to review." and stop.
    d. Confirm with the user: "I'll review `<filename>`. Correct?"
 
-2. **Round 1 — Spawn 4 parallel subagents:**
+2. **Round 1 — Spawn 4 parallel subagents** (Agent 1 **using the `opus` model**; Agents 2–4 **using the `sonnet` model** — `CLAUDE_CODE_SUBAGENT_MODEL` overrides these if set):
    - **Agent 1 — Correctness & Logic**: Logic errors, wrong assumptions, API misuse, spec violations, contradictions within the plan.
    - **Agent 2 — Edge Cases & Robustness**: Boundary conditions, empty/malformed inputs, error handling gaps, crash scenarios, encoding/Unicode issues.
    - **Agent 3 — Feasibility & Performance**: Over-engineering, unrealistic scope, dependency risks, library limitations, performance concerns, scaling issues.
@@ -52,9 +52,9 @@ This skill must only be invoked from the main session, never from a subagent.
    ```
 
 6. **Iterate until clean.** After applying fixes, automatically start the next round:
-   - Spawn **2 parallel subagents** that review ONLY the sections changed in the latest revision:
-     - **Agent A — Correctness, Logic & Edge Cases**
-     - **Agent B — Feasibility, Testing & Completeness**
+   - Spawn **2 parallel subagents** that review ONLY the sections changed in the latest revision (`CLAUDE_CODE_SUBAGENT_MODEL` overrides the per-agent models if set):
+     - **Agent A — Correctness, Logic & Edge Cases** — spawn **using the `opus` model** (it covers correctness)
+     - **Agent B — Feasibility, Testing & Completeness** — spawn **using the `sonnet` model**
    - Each subagent's prompt MUST include the same verbatim format template from step 2, modified to say: "Review ONLY the following changed sections: [list sections]. Read at most 3 source files relevant to the changes. Max 5 items."
    - Synthesize, present to user, apply approved fixes, increment revision.
    - **Stop condition**: a round produces **0 critical and 0 major** findings. Minor-only findings do not block — note them and declare the plan ready.

@@ -59,5 +59,5 @@ After completing each major task or subtask, run `/save` to checkpoint progress.
 
 If the conversation feels close to its limit (responses getting compressed, losing earlier context), run `/save` and then STOP. Do not attempt further work.
 
-Use `/save` for all checkpoints — do not manually write status files. When continuing previous work: read status files, summarize state, say "Ready to continue."
+Use `/save` for all checkpoints — do not manually write status files. When continuing previous work: read status files, summarize state, say "Ready to continue." (`session-init.py` auto-injects a recency summary of recent entries on session start/resume and after compaction — but still read the full status files on resume for complete context.)
 

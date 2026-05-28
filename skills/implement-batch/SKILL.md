@@ -25,6 +25,7 @@ This skill must only be invoked from the main session, never from a subagent.
    - **Complexity gate**: Before spawning subagents, check each task. Flag a task as "likely too complex for a single subagent" if it meets any 2 of these 3 conditions: touches >5 files, has >3 acceptance criteria, has cross-module dependencies. Present the flag to the user with a recommendation to split. Not a hard gate — the user can override and proceed.
 
 3. **Spawn parallel subagents for independent modules:**
+   - Spawn each implementer **using the `opus` model**; use the `sonnet` model only for mechanical/boilerplate modules (pure config edits, generated scaffolding, trivial pass-throughs). State the chosen model explicitly in the spawn call. (`CLAUDE_CODE_SUBAGENT_MODEL`, if set in the environment Claude launches subagents under, overrides this.)
    - Each subagent receives: the plan section for its module, relevant existing source files, and the project's testing conventions
    - **Each subagent's prompt MUST include these instructions verbatim:**
      > Implement the specified module per the plan. Also write comprehensive tests targeting 100% coverage of the new code.

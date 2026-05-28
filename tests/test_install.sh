@@ -470,6 +470,8 @@ assert_file_contains "settings-merge: sensitive-file-guard added" "$settings_mer
 assert_file_contains "settings-merge: format-python added" "$settings_merge/settings.json" "format-python.sh"
 assert_file_contains "settings-merge: PostToolUse added" "$settings_merge/settings.json" "PostToolUse"
 assert_file_contains "settings-merge: SessionStart added" "$settings_merge/settings.json" "SessionStart"
+assert_file_contains "settings-merge: SessionEnd added" "$settings_merge/settings.json" "SessionEnd"
+assert_file_contains "settings-merge: auto-capture added" "$settings_merge/settings.json" "auto-capture.py"
 assert_file_contains "settings-merge: Stop added" "$settings_merge/settings.json" "Stop"
 # Backup created
 assert_exists "settings-merge: backup created" "$settings_merge/settings.json.bak"
@@ -497,7 +499,6 @@ uninstall_settings "$settings_uninstall/settings.json"
 # Reference hooks removed
 assert_file_not_contains "settings-uninstall: sensitive-file-guard removed" "$settings_uninstall/settings.json" "sensitive-file-guard.py"
 assert_file_not_contains "settings-uninstall: format-python removed" "$settings_uninstall/settings.json" "format-python.sh"
-assert_file_not_contains "settings-uninstall: ref-scorer removed" "$settings_uninstall/settings.json" "ref-scorer.py"
 assert_file_not_contains "settings-uninstall: session-init removed" "$settings_uninstall/settings.json" "session-init.py"
 assert_file_not_contains "settings-uninstall: run-tests removed" "$settings_uninstall/settings.json" "run-tests.sh"
 assert_file_not_contains "settings-uninstall: auto-capture removed" "$settings_uninstall/settings.json" "auto-capture.py"

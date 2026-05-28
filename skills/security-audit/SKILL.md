@@ -52,6 +52,8 @@ Append a compliance note to the threat context passed to each relevant agent:
 
 Spawn 6 subagents for all projects (Agents 1-5 and 7). If `web_app = true`, also spawn Agent 6 (7 total). If `iac_detected = true`, add up to 20 IaC files to Agent 4's scope (prioritize root modules and files containing `resource`/`data` blocks) — these must be included in the scope shown to the user in step (e) for confirmation, not added silently.
 
+Spawn Agent 1 (Injection), Agent 2 (Auth), and Agent 3 (Crypto) **using the `opus` model**; spawn the remaining agents (4, 5, 6, 7) **using the `sonnet` model**. Do **not** default any agent to `haiku` — these prompts require rejecting rationalizations and reading carefully, where haiku is materially weaker; use it only as an explicit opt-in after a measured comparison, never as the default. (`CLAUDE_CODE_SUBAGENT_MODEL`, if set in the environment Claude launches subagents under, overrides these per-agent choices.)
+
 For Agent 5 (secrets), always include these files in scope regardless of user-specified scope (if they exist): `.env*`, `*.env`, `docker-compose*.yml`, `Dockerfile*`, `.github/workflows/*.yml`, `.gitlab-ci.yml`, `Jenkinsfile`, `.gitignore`, `.pre-commit-config.yaml`, and any config files matching `*config*`, `*settings*`, `*secret*`. Note: Agent 5 scans CI configs for hardcoded secrets/credentials only — security tooling presence is Agent 7's concern.
 
 - **Agent 1 — Injection & Input Validation**: SQL injection, NoSQL injection, command injection, LDAP injection, XPath injection, template injection (SSTI), header injection, log injection. Check that all user input is validated at system boundaries, parameterized queries are used, and no string concatenation builds queries or commands.
@@ -238,12 +240,12 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
   **If `compliance_framework` includes `soc2`, also check:**
   - Change management controls in CI/CD pipelines (approval gates, protected branches, required reviews), monitoring/alerting configured.
 
-**Each subagent's prompt MUST include these instructions verbatim:**
-> Read the files in scope. For context, you may read up to 5 additional files (imports, configs, shared utilities) directly referenced by the scoped files. Do NOT scan the entire codebase.
+**Each subagent's prompt MUST be assembled verbatim from the shared fragments in `~/.claude/rules/review-output-contract.md` plus this skill's domain-specific content.** Read that file (when working inside the `claude_extensions` repo itself it is also at `rules/review-output-contract.md`) and inline the named fragment in place of each `<<shared:…>>` marker below; inline every other line exactly as written:
+> <<shared:scope-and-context>>
 >
 > Approach the code from an **attacker's perspective**. For each issue found, verify it is actually exploitable in context — do not flag theoretical issues that are mitigated elsewhere. Check if a framework or middleware already handles the concern before reporting.
 >
-> Return findings as a numbered list, max 10 items, highest severity first. Each item must have exactly these fields:
+> <<shared:findings-format>>
 > - **Severity**: critical | high | medium | low
 > - **Category**: OWASP category or CWE ID (e.g., "A03:2021 Injection", "CWE-798 Hardcoded Credentials")
 > - **Location**: file path and line number or function name
@@ -277,7 +279,7 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
 > - "This crypto code matches common patterns" — STOP. Common patterns are commonly misused. Verify parameters, modes, and key sizes.
 > - "I've already checked this type of issue in another file" — STOP. Each file has its own context. Check again.
 >
-> Return NO other text, except: if you encounter tool errors or cannot read required files, report that as your first finding with severity "critical" and category "tooling".
+> <<shared:closing-instruction>>
 
 ## 3. Synthesize Results
 
@@ -308,10 +310,10 @@ If the user wants to fix issues:
 ## 5. Follow-Up Rounds
 
 After applying fixes, automatically verify them:
-- Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context:
-  - **Agent A — Injection, Auth, Data Exposure & Secrets** (combines agents 1-3 and 5 focus areas)
-  - **Agent B — Infrastructure, Supply Chain, Web & CI/CD** (agent 4, 6, and 7 focus areas, plus IaC configuration fixes if `iac_detected = true`, plus checking that fixes didn't introduce new issues or new secret leaks)
-- Each subagent's prompt MUST include the same verbatim format template from step 2, modified to say: "Review ONLY the following changed files/sections: [list]. Read at most 3 additional context files. Max 5 items. Also verify that the applied fixes are correct and complete — check for regressions."
+- Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context (`CLAUDE_CODE_SUBAGENT_MODEL` overrides the per-agent models if set):
+  - **Agent A — Injection, Auth, Data Exposure & Secrets** (combines agents 1-3 and 5 focus areas) — spawn **using the `opus` model** (it covers the injection/auth/crypto categories)
+  - **Agent B — Infrastructure, Supply Chain, Web & CI/CD** (agent 4, 6, and 7 focus areas, plus IaC configuration fixes if `iac_detected = true`, plus checking that fixes didn't introduce new issues or new secret leaks) — spawn **using the `sonnet` model**
+- Each subagent's prompt MUST include the same verbatim format template from step 2 (assembled from `~/.claude/rules/review-output-contract.md` as described there), modified to say: "Review ONLY the following changed files/sections: [list]. Read at most 3 additional context files. Max 5 items. Also verify that the applied fixes are correct and complete — check for regressions."
 - Synthesize and present to user.
 - **Stop condition**: a round produces **0 critical and 0 high** findings. Medium/low findings do not block — note them and declare the review complete.
 - **Safety valve**: max 3 follow-up rounds. If critical/high issues persist, STOP — report what keeps recurring and flag to the user.

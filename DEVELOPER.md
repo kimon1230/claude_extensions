@@ -12,9 +12,9 @@ python3 -m venv .venv
 ## Testing
 
 ```bash
-.venv/bin/pytest              # Python tests (402 tests)
+.venv/bin/pytest              # Python tests (296 tests)
 .venv/bin/ruff check .        # lint
-bash tests/test_install.sh    # installer/uninstaller tests (90 tests)
+bash tests/test_install.sh    # installer/uninstaller tests (91 tests)
 bash tests/test_statusline.sh # status line tests (27 tests)
 ```
 
@@ -24,10 +24,9 @@ Python tests live in `tests/` and cover all modules in `hooks/lib/` and the hook
 
 ### Hook script pattern
 
-Python hook scripts use hyphenated filenames (`ref-scorer.py`, `session-init.py`, `auto-capture.py`) to match shell hook naming conventions. Since Python can't import hyphenated names, each has a `_mod.py` companion:
+Python hook scripts use hyphenated filenames (`session-init.py`, `auto-capture.py`, `sensitive-file-guard.py`) to match shell hook naming conventions. Since Python can't import hyphenated names, each has a `_mod.py` companion:
 
 ```
-ref-scorer.py        → imports from ref_scorer_mod.py
 session-init.py      → imports from session_init_mod.py
 auto-capture.py      → imports from auto_capture_mod.py
 ```
@@ -61,23 +60,17 @@ All shared code lives in `hooks/lib/` — stdlib only, no external dependencies:
 |--------|---------|
 | `entries.py` | `Entry` dataclass, typed entry parsing/serialization, section-aware `session-progress.md` parsing |
 | `fileutil.py` | Atomic writes (`tempfile` + `os.replace`), safe JSON read/write with `.bak` fallback |
-| `ref_tracker.py` | 3-tier reference scoring (path match, directory overlap, keyword overlap) |
 | `paths.py` | Project name resolution (git remote → git root → cwd), status directory paths |
 | `scribe.py` | Git diff classification, observation entry generation |
-| `compressor.py` | 4-tier compression algorithm, trigger logic, tier rotation |
 
 ### Context persistence data flow
 
 ```
-Tool use → ref-scorer.py → scores entries in ref-cache.json
-                                    ↓
 Session end → auto-capture.py → appends ## Auto-captured entries
                                     ↓
 /save → Claude promotes entries → session-progress.md (typed entries)
                                     ↓
-Session start → session-init.py → checks triggers → compressor.py
-                                    ↓
-              Active entries stay ← Stale entries compress/archive/drop
+Session start/compact → session-init.py → increments session_count + re-injects recency summary (additionalContext)
 ```
 
 ### Install mechanism
@@ -123,7 +116,25 @@ This strip-then-add approach ensures upgrades cleanly replace stale entries (ren
 | PreToolUse (Read) | `sensitive-file-guard.py` | 5s |
 | PreToolUse (Bash) | `sensitive-file-guard.py` | 5s |
 | PostToolUse (Edit\|Write) | `format-python.sh` | default |
-| PostToolUse (Read\|Edit\|Write\|Grep\|Glob) | `ref-scorer.py` | 5s |
 | SessionStart | `session-init.py` | 10s |
 | Stop | `run-tests.sh` | 120s |
-| Stop | `auto-capture.py` | 10s |
+| SessionEnd | `auto-capture.py` | 10s |
+
+### Subagent model selection in review skills
+
+The multi-agent skills assign a model per spawned subagent via the Agent tool's `model` parameter. The higher-stakes passes (architecture, correctness, injection/auth/crypto) get `opus`; the rest get `sonnet`:
+
+| Skill | `opus` agents | `sonnet` agents |
+|-------|---------------|-----------------|
+| `/code-review` | Architecture (1), Correctness (3); both follow-up agents | Quality (2), Performance (4), Maintainability (5) |
+| `/security-audit` | Injection (1), Auth (2), Crypto (3); follow-up Agent A | Infra/Supply Chain (4), Secrets (5), Web (6), CI/CD (7); follow-up Agent B |
+| `/critical-review` | Correctness & Logic (1); follow-up Agent A | Edge Cases (2), Feasibility (3), Testing (4); follow-up Agent B |
+| `/implement-batch` | implementers (default) | mechanical/boilerplate modules |
+
+Synthesis runs in the main session, so it uses whatever model the session runs (no `model` param to set). `haiku` is never a default for the review/audit agents — these prompts require rejecting rationalizations and careful reading, where it is materially weaker. Setting `CLAUDE_CODE_SUBAGENT_MODEL` in the environment Claude launches subagents under overrides every per-agent choice above.
+
+### Shared review output-contract fragments
+
+`rules/review-output-contract.md` is the single source of truth for the boilerplate that is **identical verbatim** between the `/code-review` and `/security-audit` subagent prompts: the scope/context opening, the findings-list-format transition, and the closing instruction. Each skill's Section 2 reads the file and inlines the named fragment at each `<<shared:…>>` marker. The skills reference it by its **installed** path `~/.claude/rules/review-output-contract.md` (symlinked there by `install.sh`'s `rules/*.md` discovery, like every other rule) so the runtime Read resolves regardless of the project CWD — a bare `rules/…` relative path would only resolve when the CWD happens to be this repo. No installer change was needed; the glob picks the file up and `uninstall.sh`'s generic symlink sweep removes it.
+
+Only those three fragments are shared. The **field list**, **severity scale**, **"Rationalizations to Reject"**, and **"Red Flags"** are domain-specific (code review vs. security) and stay inline per skill — consolidating them would have dropped the per-domain tuning. `/critical-review` reviews a plan rather than code, so its preamble and closer differ and it does not consume the fragments. `tests/test_review_contract.py` pins this contract (shared file has no severity scale; consumers reference it, use the markers, no longer inline the fragments, and keep their own scale/rationalizations).

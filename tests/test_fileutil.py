@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-_is_root = os.getuid() == 0
-
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks.lib.fileutil import atomic_write, safe_read_json, safe_write_json
+
+_is_root = os.getuid() == 0
 
 
 class TestAtomicWrite:

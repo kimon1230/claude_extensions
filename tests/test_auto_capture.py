@@ -1,7 +1,8 @@
-"""Tests for hooks/auto-capture.py Stop hook."""
+"""Tests for hooks/auto-capture.py SessionEnd hook."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -12,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks.lib.entries import Entry, serialize_entries
-from hooks.lib.fileutil import safe_read_json
 
 # Import the module under test eagerly so monkeypatch targets are stable
 from hooks import auto_capture_mod
@@ -86,9 +86,6 @@ def _setup_paths(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         auto_capture_mod, "get_session_progress_path", lambda *a, **kw: progress_path
-    )
-    monkeypatch.setattr(
-        auto_capture_mod, "get_ref_cache_path", lambda *a, **kw: cache_path
     )
     return progress_path, cache_path
 
@@ -276,49 +273,6 @@ class TestMergeAutoCapuredSection:
         assert content.count("## Auto-captured") == 1
 
 
-class TestRefCacheUpdate:
-    def test_updates_ref_cache_with_initial_score(self, tmp_path, monkeypatch):
-        """New entries get score=1 in ref-cache.json."""
-        _setup_git_mocks(monkeypatch)
-        _setup_scribe_mocks(monkeypatch)
-        progress_path, cache_path = _setup_paths(monkeypatch, tmp_path)
-
-        with open(progress_path, "w") as f:
-            f.write("")
-
-        auto_capture_mod.main()
-
-        cache = safe_read_json(cache_path)
-        assert "scores" in cache
-        scores = cache["scores"]
-        assert len(scores) == 1
-        # All new entries have score=1
-        for score in scores.values():
-            assert score == 1
-
-    def test_preserves_existing_cache_scores(self, tmp_path, monkeypatch):
-        """Existing scores in ref-cache.json are preserved."""
-        _setup_git_mocks(monkeypatch)
-        _setup_scribe_mocks(monkeypatch)
-        progress_path, cache_path = _setup_paths(monkeypatch, tmp_path)
-
-        with open(progress_path, "w") as f:
-            f.write("")
-
-        # Pre-populate cache
-        existing_cache = {"scores": {"existingid12345678": 5}}
-        with open(cache_path, "w") as f:
-            json.dump(existing_cache, f)
-
-        auto_capture_mod.main()
-
-        cache = safe_read_json(cache_path)
-        scores = cache["scores"]
-        assert scores["existingid12345678"] == 5
-        # Plus the new entry
-        assert len(scores) == 2
-
-
 class TestUniqueIds:
     def test_generates_unique_16_char_hex_ids(self, tmp_path, monkeypatch):
         """Each entry gets a unique 16-char hex ID."""
@@ -463,3 +417,83 @@ class TestGitStatusFailure:
 
         auto_capture_mod.main()
         assert not os.path.exists(cache_path)
+
+
+class TestCaptureWorkdir:
+    def test_capture_runs_git_in_workdir_and_restores_cwd(self, tmp_path, monkeypatch):
+        """capture(workdir=...) chdir's into workdir for git, then restores cwd."""
+        workdir = str(tmp_path / "proj")
+        os.makedirs(workdir)
+        recorded = {}
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
+                recorded["cwd"] = os.getcwd()
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=" M src/x.py\n", stderr=""
+                )
+            return original_run(cmd, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        _setup_scribe_mocks(monkeypatch)
+        progress_path = str(tmp_path / "session-progress.md")
+        monkeypatch.setattr(
+            auto_capture_mod, "get_session_progress_path", lambda *a, **kw: progress_path
+        )
+        with open(progress_path, "w") as f:
+            f.write("")
+
+        before = os.getcwd()
+        summary = auto_capture_mod.capture(workdir=workdir)
+
+        # git ran inside the resolved workdir, and cwd was restored afterward
+        assert os.path.realpath(recorded["cwd"]) == os.path.realpath(workdir)
+        assert os.getcwd() == before
+        assert summary is not None
+
+    def test_capture_non_git_workdir_warns_and_returns_none(self, tmp_path, capsys):
+        """A non-git workdir produces a stderr warning, returns None, restores cwd."""
+        workdir = str(tmp_path / "empty")
+        os.makedirs(workdir)
+        before = os.getcwd()
+
+        result = auto_capture_mod.capture(workdir=workdir)
+
+        assert result is None
+        assert os.getcwd() == before
+        assert "git repository" in capsys.readouterr().err
+
+
+class TestSessionEndReasonGating:
+    def _run_with_reason(self, tmp_path, monkeypatch, stdin_text):
+        _setup_git_mocks(monkeypatch)
+        _setup_scribe_mocks(monkeypatch)
+        progress_path, _ = _setup_paths(monkeypatch, tmp_path)
+        with open(progress_path, "w") as f:
+            f.write("")
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
+        auto_capture_mod.main()
+        with open(progress_path) as f:
+            return f.read()
+
+    def test_captures_on_clear_reason(self, tmp_path, monkeypatch):
+        """reason=clear must NOT suppress capture — that's when uncommitted work matters."""
+        content = self._run_with_reason(
+            tmp_path, monkeypatch, json.dumps({"reason": "clear"})
+        )
+        assert "## Auto-captured" in content
+
+    def test_captures_on_unknown_reason(self, tmp_path, monkeypatch):
+        """An unrecognized reason still captures."""
+        content = self._run_with_reason(
+            tmp_path, monkeypatch, json.dumps({"reason": "unknown_future_event"})
+        )
+        assert "## Auto-captured" in content
+
+    def test_malformed_stdin_still_captures(self, tmp_path, monkeypatch):
+        """Malformed stdin never suppresses capture and never raises."""
+        content = self._run_with_reason(tmp_path, monkeypatch, "not json {{{")
+        assert "## Auto-captured" in content

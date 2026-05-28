@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Stop hook: auto-capture uncommitted changes as session-progress entries.
+"""SessionEnd hook: auto-capture uncommitted changes as session-progress entries.
 
-Runs at session stop. Detects uncommitted git changes, classifies them,
+Runs at session end. Detects uncommitted git changes, classifies them,
 and appends an ## Auto-captured section to session-progress.md.
 
-Must NEVER produce output or raise — silent on all errors.
+Reads the SessionEnd payload (reason) best-effort; never raises.
 """
 
 from __future__ import annotations
