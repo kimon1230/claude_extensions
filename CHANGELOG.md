@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7] - 2026-06-11
+
+### Changed
+
+- **Review-skill model ladder raised one tier for Fable 5** — `/code-review`, `/security-audit`, and `/critical-review` now spawn the high-stakes passes (architecture, correctness, injection/auth/crypto, all `/critical-review` agents, all fix-verification agents) with `fable` and the breadth passes with `opus` (previously `opus`/`sonnet`). Breadth slots dropped `sonnet` after a 2026-06-11 comparison showed its false-positive rate cost more main-session verification time than it saved. `/implement-batch` is unchanged (`opus` implementers, `sonnet` for mechanical modules — tests gate its output). DEVELOPER.md mapping table updated.
+
 ## [0.6]
 
 Harness modernization for current Claude Code (CLI 2.1.x). All 6 batches implemented and validated. Plan: `~/.claude/plans/claude_extensions/harness-modernization-20260527.md`.

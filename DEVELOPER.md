@@ -122,14 +122,14 @@ This strip-then-add approach ensures upgrades cleanly replace stale entries (ren
 
 ### Subagent model selection in review skills
 
-The multi-agent skills assign a model per spawned subagent via the Agent tool's `model` parameter. The higher-stakes passes (architecture, correctness, injection/auth/crypto) get `opus`; the rest get `sonnet`:
+The multi-agent skills assign a model per spawned subagent via the Agent tool's `model` parameter. The higher-stakes passes (architecture, correctness, injection/auth/crypto, plan adjudication, fix verification) get `fable`; the breadth review passes get `opus`. Breadth slots dropped `sonnet` after a measured comparison (2026-06-11): its false-positive rate in review slots cost more main-session verification time than the model savings. `/implement-batch` is the exception — it generates code rather than adjudicating findings, and tests gate its output — so it keeps `opus` implementers with `sonnet` for mechanical/boilerplate modules:
 
-| Skill | `opus` agents | `sonnet` agents |
-|-------|---------------|-----------------|
+| Skill | `fable` agents | `opus` agents |
+|-------|----------------|---------------|
 | `/code-review` | Architecture (1), Correctness (3); both follow-up agents | Quality (2), Performance (4), Maintainability (5) |
-| `/security-audit` | Injection (1), Auth (2), Crypto (3); follow-up Agent A | Infra/Supply Chain (4), Secrets (5), Web (6), CI/CD (7); follow-up Agent B |
-| `/critical-review` | Correctness & Logic (1); follow-up Agent A | Edge Cases (2), Feasibility (3), Testing (4); follow-up Agent B |
-| `/implement-batch` | implementers (default) | mechanical/boilerplate modules |
+| `/security-audit` | Injection (1), Auth (2), Crypto (3); both follow-up agents | Infra/Supply Chain (4), Secrets (5), Web (6), CI/CD (7) |
+| `/critical-review` | all four Round-1 agents; both follow-up agents | — |
+| `/implement-batch` | — | implementers (default; `sonnet` for mechanical/boilerplate modules) |
 
 Synthesis runs in the main session, so it uses whatever model the session runs (no `model` param to set). `haiku` is never a default for the review/audit agents — these prompts require rejecting rationalizations and careful reading, where it is materially weaker. Setting `CLAUDE_CODE_SUBAGENT_MODEL` in the environment Claude launches subagents under overrides every per-agent choice above.
 
