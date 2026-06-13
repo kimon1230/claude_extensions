@@ -109,7 +109,7 @@ Language-specific conventions loaded only when working with matching files (via 
 `statusline-command.sh` renders a PS1-style prompt in the Claude Code UI:
 
 ```
-user@host:~/project (Opus 4.7) [████████░░ 80%] ~$1.23
+user@host:~/project (Opus 4.8) [████████░░ 80%] ~$1.23
 ```
 
 - Green/yellow/red context bar based on remaining context window

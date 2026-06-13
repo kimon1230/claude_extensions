@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8]
+
+### Changed
+
+- **Multi-agent skills stop pinning a model name** — `/code-review`, `/security-audit`, `/critical-review`, and `/implement-batch` no longer name `fable`, `opus`, or any version-specific model per subagent. They now spawn every subagent on the latest, most capable model by omitting the Agent tool's `model` override so each inherits the session's model, sidestepping discontinued-model churn (e.g. Fable). The guardrails are retained as cautions rather than pins: don't downgrade breadth/review passes to `sonnet` (per the 2026-06-11 comparison) and never default to `haiku`. `/implement-batch` previously kept an `opus`/`sonnet` cost split; that is collapsed to the inherited model as well. DEVELOPER.md mapping table updated.
+- `README.md` statusline example model label `Opus 4.7 → Opus 4.8`.
+
 ## [0.7] - 2026-06-11
 
 ### Changed

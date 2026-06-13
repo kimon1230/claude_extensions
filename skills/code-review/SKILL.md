@@ -35,7 +35,7 @@ Language detection shapes agent behavior — agents should apply language-idioma
 
 ## 2. Round 1 — Spawn Parallel Subagents
 
-Spawn 5 subagents. Spawn Agent 1 (Architecture) and Agent 3 (Correctness) **using the `fable` model**; spawn Agent 2 (Quality/Readability), Agent 4 (Performance), and Agent 5 (Maintainability) **using the `opus` model** — the higher-stakes architecture and correctness passes get the strongest available model, and the breadth passes use opus (not sonnet: measured 2026-06-11, sonnet's false-positive rate in these slots cost more main-session verification time than its savings). (`CLAUDE_CODE_SUBAGENT_MODEL`, if set in the environment Claude launches subagents under, overrides these per-agent choices.)
+Spawn 5 subagents on the **latest, most capable model** available — omit the per-agent `model` override so each subagent inherits the session's model rather than pinning a version-specific name. Do **not** add an override that downgrades the breadth passes (Quality/Readability, Performance, Maintainability) to a cheaper tier such as `sonnet`: measured 2026-06-11, sonnet's false-positive rate in these slots cost more main-session verification time than its savings. (`CLAUDE_CODE_SUBAGENT_MODEL`, if set in the environment Claude launches subagents under, overrides the inherited model.)
 
 Each agent reviews from a **senior distinguished engineer's perspective** — not looking for vulnerabilities (that's `/security-audit`), but evaluating whether this code is well-designed, maintainable, and correct.
 
@@ -160,7 +160,7 @@ If the user wants to fix issues:
 ## 5. Follow-Up Rounds
 
 After applying fixes, automatically verify them:
-- Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context, **both using the `fable` model** (fix verification is high-stakes; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
+- Spawn **2 parallel subagents** that review ONLY the changed code and its immediate context, **both on the latest, most capable model** (omit the `model` override so they inherit the session model; fix verification is high-stakes — don't downgrade to a cheaper tier; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
   - **Agent A — Architecture, Quality & Correctness** (combines agents 1-3 focus areas)
   - **Agent B — Performance, Maintainability & Testing** (combines agents 4-5 focus areas, plus checking that fixes didn't introduce new issues)
 - Each subagent's prompt MUST include the full verbatim format template from Section 2 (assembled from `~/.claude/rules/review-output-contract.md` as described there), with only the first line (the `<<shared:scope-and-context>>` fragment) replaced: "Review ONLY the following changed files/sections: [list]. Read at most 3 additional context files. Max 5 items. Also verify that the applied fixes are correct and complete — check for regressions." All other instructions (severity guide, field format, `<<shared:findings-format>>`, `<<shared:closing-instruction>>`) remain unchanged.

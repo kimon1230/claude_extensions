@@ -16,7 +16,7 @@ This skill must only be invoked from the main session, never from a subagent.
    c. List files in `~/.claude/plans/<project-name>/`, sorted by modification time (most recent first). If the directory does not exist or contains no `.md` files, tell the user: "No plan files found in `~/.claude/plans/<project-name>/`. Please specify a file path to review." and stop.
    d. Confirm with the user: "I'll review `<filename>`. Correct?"
 
-2. **Round 1 — Spawn 4 parallel subagents** (all four **using the `fable` model** — plan adjudication is precision work where weaker models' false positives cost more verification time than the model savings; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
+2. **Round 1 — Spawn 4 parallel subagents** (all four on the **latest, most capable model** — omit the `model` override so each inherits the session model rather than pinning a version-specific name; plan adjudication is precision work where a weaker model's false positives cost more verification time than the savings, so don't downgrade to a cheaper tier; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
    - **Agent 1 — Correctness & Logic**: Logic errors, wrong assumptions, API misuse, spec violations, contradictions within the plan.
    - **Agent 2 — Edge Cases & Robustness**: Boundary conditions, empty/malformed inputs, error handling gaps, crash scenarios, encoding/Unicode issues.
    - **Agent 3 — Feasibility & Performance**: Over-engineering, unrealistic scope, dependency risks, library limitations, performance concerns, scaling issues.
@@ -52,7 +52,7 @@ This skill must only be invoked from the main session, never from a subagent.
    ```
 
 6. **Iterate until clean.** After applying fixes, automatically start the next round:
-   - Spawn **2 parallel subagents** that review ONLY the sections changed in the latest revision, **both using the `fable` model** (fix verification is high-stakes; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
+   - Spawn **2 parallel subagents** that review ONLY the sections changed in the latest revision, **both on the latest, most capable model** (omit the `model` override so they inherit the session model; fix verification is high-stakes — don't downgrade to a cheaper tier; `CLAUDE_CODE_SUBAGENT_MODEL` overrides if set):
      - **Agent A — Correctness, Logic & Edge Cases**
      - **Agent B — Feasibility, Testing & Completeness**
    - Each subagent's prompt MUST include the same verbatim format template from step 2, modified to say: "Review ONLY the following changed sections: [list sections]. Read at most 3 source files relevant to the changes. Max 5 items."
