@@ -12,10 +12,9 @@ python3 -m venv .venv
 ## Testing
 
 ```bash
-.venv/bin/pytest              # Python tests (296 tests)
+.venv/bin/pytest              # Python tests
 .venv/bin/ruff check .        # lint
-bash tests/test_install.sh    # installer/uninstaller tests (91 tests)
-bash tests/test_statusline.sh # status line tests (27 tests)
+bash tests/test_install.sh    # POSIX installer/uninstaller tests
 ```
 
 Python tests live in `tests/` and cover all modules in `hooks/lib/` and the hook entry points. Shell tests are standalone bash scripts with built-in assertion helpers.
@@ -62,6 +61,7 @@ All shared code lives in `hooks/lib/` — stdlib only, no external dependencies:
 | `fileutil.py` | Atomic writes (`tempfile` + `os.replace`), safe JSON read/write with `.bak` fallback |
 | `paths.py` | Project name resolution (git remote → git root → cwd), status directory paths |
 | `scribe.py` | Git diff classification, observation entry generation |
+| `platformutil.py` | Cross-platform venv dir (`bin`/`Scripts`) + tool (`.exe`) resolution, `walk_up` (terminates on Windows) |
 
 ### Context persistence data flow
 
@@ -101,6 +101,8 @@ This preserves user customizations. The uninstaller removes only the marked bloc
 - Settings.json entries are stripped and re-added from the current reference on every run, so stale entries are cleaned up automatically
 - When everything is current, the installer produces no interactive prompts
 
+There is no native-Windows installer. Two Windows surfaces (see the README **Windows** section for user steps): the **CLI** is automated via WSL2 + `install.sh`; the **desktop app's Code tab** runs natively on Windows, shares `%USERPROFILE%\.claude\` config with the CLI, and executes hooks under Git Bash — but has no installer, so it's a manual copy + `settings.json` hand-merge (swap `python3` for `python`/`py`/a full interpreter path, which Git Bash on Windows needs). The desktop app cannot use a local WSL2 project, so WSL2 does not cover it. The runtime hooks are cross-platform Python (`platformutil.py` resolves `.venv\Scripts`, `fileutil.py` guards POSIX-only `chmod`), so once wired up they run correctly under WSL2 or Git Bash without a separate port.
+
 ### Hook registration
 
 Hooks are registered in `settings.json.reference` and merged into `~/.claude/settings.json` by `install.sh`. The merge is handled by `merge_settings_json()` which:
@@ -115,9 +117,9 @@ This strip-then-add approach ensures upgrades cleanly replace stale entries (ren
 |-------|------|---------|
 | PreToolUse (Read) | `sensitive-file-guard.py` | 5s |
 | PreToolUse (Bash) | `sensitive-file-guard.py` | 5s |
-| PostToolUse (Edit\|Write) | `format-python.sh` | default |
+| PostToolUse (Edit\|Write) | `format-python.py` | default |
 | SessionStart | `session-init.py` | 10s |
-| Stop | `run-tests.sh` | 120s |
+| Stop | `run-tests.py` | 120s |
 | SessionEnd | `auto-capture.py` | 10s |
 
 ### Subagent model selection in review skills

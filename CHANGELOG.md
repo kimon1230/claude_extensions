@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9]
+
+### Changed
+
+- **Runtime hooks ported to cross-platform Python** — the three remaining shell hooks are now Python: `statusline.py` (was `statusline-command.sh`), `format-python.py` (was `format-python.sh`), and `run-tests.py` (was `run-tests.sh`). The entire runtime hook surface is now Python (stdlib only) — this drops the `jq` dependency from `format-python`, adds unit-test coverage the shell versions lacked, and runs under any shell (including Git Bash on Windows and WSL2). New `hooks/lib/platformutil.py` resolves `.venv/bin` vs `.venv\Scripts\*.exe` and walks parent directories safely across platforms; `hooks/lib/fileutil.py` guards its `os.chmod` calls behind `os.name != "nt"` (POSIX permission bits don't apply on Windows).
+
+### Added
+
+- **Windows setup guidance** — the README `## Windows` section documents two paths: the **CLI** via WSL2 + `install.sh` (automated, identical to Linux), and the desktop app's **Code tab** running natively on Windows (which shares `%USERPROFILE%\.claude\` config with the CLI and executes hooks under Git Bash) via a manual copy + `settings.json` merge. There is no native-Windows installer; `install.sh` / `uninstall.sh` remain POSIX/bash.
+
 ## [0.8]
 
 ### Changed

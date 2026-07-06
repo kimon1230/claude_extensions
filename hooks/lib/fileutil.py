@@ -13,6 +13,18 @@ import sys
 import tempfile
 
 
+def _chmod(path: str, mode: int) -> None:
+    """Apply POSIX permission bits, skipping the call on Windows.
+
+    ``os.chmod`` on Windows only honors the read-only bit and ignores the rest,
+    so POSIX modes like ``0o600``/``0o700`` don't mean anything there. Guarding
+    the calls makes that intent explicit rather than relying on partial
+    behavior. (``os.makedirs(mode=...)`` is likewise a no-op on Windows.)
+    """
+    if os.name != "nt":
+        os.chmod(path, mode)
+
+
 def atomic_write(path: str, content: str) -> None:
     """Write content to path atomically via tempfile + os.replace.
 
@@ -22,13 +34,13 @@ def atomic_write(path: str, content: str) -> None:
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, mode=0o700, exist_ok=True)
-        os.chmod(parent, 0o700)
+        _chmod(parent, 0o700)
 
     fd, tmp_path = tempfile.mkstemp(dir=parent or ".")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
-        os.chmod(tmp_path, 0o600)
+        _chmod(tmp_path, 0o600)
         os.replace(tmp_path, path)
     except BaseException:
         # Clean up tempfile on any failure
@@ -83,9 +95,9 @@ def safe_write_json(path: str, data: dict) -> None:
         parent = os.path.dirname(backup_path)
         if parent:
             os.makedirs(parent, mode=0o700, exist_ok=True)
-            os.chmod(parent, 0o700)
+            _chmod(parent, 0o700)
         shutil.copy2(path, backup_path)
-        os.chmod(backup_path, 0o600)
+        _chmod(backup_path, 0o600)
 
     content = json.dumps(data, indent=2)
     atomic_write(path, content)

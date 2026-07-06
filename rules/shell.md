@@ -6,6 +6,9 @@ paths:
 
 # Shell Scripts
 
+The runtime hooks are all Python now (stdlib only); the remaining shell scripts
+are the POSIX installer pair (`install.sh` / `uninstall.sh`).
+
 ## Conventions
 When creating or modifying `.sh` files:
 - Verify actual field names from the data source (don't assume)

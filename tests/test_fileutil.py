@@ -13,7 +13,7 @@ import pytest
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hooks.lib.fileutil import atomic_write, safe_read_json, safe_write_json
+from hooks.lib.fileutil import _chmod, atomic_write, safe_read_json, safe_write_json
 
 _is_root = os.getuid() == 0
 
@@ -193,3 +193,44 @@ class TestSafeWriteJson:
         backup = target + ".bak"
         mode = stat.S_IMODE(os.stat(backup).st_mode)
         assert mode == 0o600
+
+
+class TestChmodGuard:
+    """_chmod applies POSIX bits on POSIX and is a no-op on Windows."""
+
+    def test_applies_chmod_on_posix(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(os, "name", "posix")
+        calls = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: calls.append((p, m)))
+        _chmod(str(tmp_path), 0o700)
+        assert calls == [(str(tmp_path), 0o700)]
+
+    def test_skips_chmod_on_windows(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(os, "name", "nt")
+        calls = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: calls.append((p, m)))
+        _chmod(str(tmp_path), 0o600)
+        assert calls == []
+
+    def test_atomic_write_makes_no_chmod_calls_on_windows(self, tmp_path, monkeypatch):
+        # On Windows, atomic_write must still write the file but issue no chmod.
+        monkeypatch.setattr(os, "name", "nt")
+        calls = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: calls.append(p))
+        target = str(tmp_path / "win.txt")
+        atomic_write(target, "payload")
+        assert calls == []
+        with open(target) as f:
+            assert f.read() == "payload"
+
+    def test_safe_write_json_succeeds_on_windows(self, tmp_path, monkeypatch):
+        # With os.name == "nt", our explicit _chmod guards no-op; the write (and
+        # the backup path) must still complete and produce correct content.
+        # (shutil.copy2 does its own OS-aware metadata copy — not our concern.)
+        target = str(tmp_path / "data.json")
+        with open(target, "w") as f:
+            json.dump({"old": True}, f)  # pre-existing file → triggers backup path
+        monkeypatch.setattr(os, "name", "nt")
+        safe_write_json(target, {"new": True})
+        assert safe_read_json(target) == {"new": True}
+        assert os.path.exists(target + ".bak")

@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/format-python.sh"
+            "command": "python3 $HOME/.claude/hooks/format-python.py"
           }
         ]
       }
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/run-tests.sh",
+            "command": "python3 $HOME/.claude/hooks/run-tests.py",
             "timeout": 120,
             "statusMessage": "Running tests..."
           }
@@ -76,7 +76,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "bash $HOME/.claude/statusline-command.sh"
+    "command": "python3 $HOME/.claude/hooks/statusline.py"
   },
   "enabledPlugins": {
     "frontend-design@claude-plugins-official": true

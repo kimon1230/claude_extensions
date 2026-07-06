@@ -69,7 +69,7 @@ uninstall_settings() {
     # Check if there's anything to remove
     local has_hooks has_statusline
     has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
-    has_statusline=$(jq 'if (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
+    has_statusline=$(jq 'if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
 
     if [ "$has_hooks" = "0" ] && [ "$has_statusline" = "0" ]; then
         return 0
@@ -90,7 +90,7 @@ uninstall_settings() {
         # Remove hooks key entirely if empty
         if (.hooks | length) == 0 then del(.hooks) else . end |
         # Remove statusLine if it references our statusline script
-        if (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then del(.statusLine) else . end
+        if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then del(.statusLine) else . end
     ' "$settings_file")
 
     printf '%s\n' "$cleaned" > "$settings_file"
@@ -226,7 +226,7 @@ main() {
     if [ -t 0 ]; then
         local has_hooks has_statusline
         has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
-        has_statusline=$(jq 'if (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
+        has_statusline=$(jq 'if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
         if [ "$has_hooks" != "0" ] || [ "$has_statusline" != "0" ]; then
             printf "\n  Remove hook/statusline entries from settings.json? [Y/n] "
             read -r answer </dev/tty

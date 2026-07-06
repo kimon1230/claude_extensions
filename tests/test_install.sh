@@ -8,7 +8,7 @@ UNINSTALL="$SCRIPT_DIR/uninstall.sh"
 PASS=0
 FAIL=0
 
-# --- Assertion helpers (same pattern as test_statusline.sh) ---
+# --- Assertion helpers ---
 
 assert_eq() {
     local test_name="$1" expected="$2" actual="$3"
@@ -467,7 +467,7 @@ assert_file_contains "settings-merge: enabledPlugins preserved" "$settings_merge
 assert_file_contains "settings-merge: user hook preserved" "$settings_merge/settings.json" "my-custom-linter.sh"
 # Reference hooks added
 assert_file_contains "settings-merge: sensitive-file-guard added" "$settings_merge/settings.json" "sensitive-file-guard.py"
-assert_file_contains "settings-merge: format-python added" "$settings_merge/settings.json" "format-python.sh"
+assert_file_contains "settings-merge: format-python added" "$settings_merge/settings.json" "format-python.py"
 assert_file_contains "settings-merge: PostToolUse added" "$settings_merge/settings.json" "PostToolUse"
 assert_file_contains "settings-merge: SessionStart added" "$settings_merge/settings.json" "SessionStart"
 assert_file_contains "settings-merge: SessionEnd added" "$settings_merge/settings.json" "SessionEnd"
@@ -483,7 +483,7 @@ install_settings "$settings_repo" "$settings_merge"
 sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_merge/settings.json" || true)
 # sensitive-file-guard appears twice in reference (PreToolUse Read + Bash), so expect 2
 assert_eq "settings-idempotent: sensitive-file-guard count unchanged" "2" "$sensitive_count"
-format_count=$(grep -c "format-python.sh" "$settings_merge/settings.json" || true)
+format_count=$(grep -c "format-python.py" "$settings_merge/settings.json" || true)
 assert_eq "settings-idempotent: format-python count unchanged" "1" "$format_count"
 # User hook still there
 assert_file_contains "settings-idempotent: user hook still present" "$settings_merge/settings.json" "my-custom-linter.sh"
@@ -498,11 +498,11 @@ cp "$settings_merge/settings.json" "$settings_uninstall/settings.json"
 uninstall_settings "$settings_uninstall/settings.json"
 # Reference hooks removed
 assert_file_not_contains "settings-uninstall: sensitive-file-guard removed" "$settings_uninstall/settings.json" "sensitive-file-guard.py"
-assert_file_not_contains "settings-uninstall: format-python removed" "$settings_uninstall/settings.json" "format-python.sh"
+assert_file_not_contains "settings-uninstall: format-python removed" "$settings_uninstall/settings.json" "format-python.py"
 assert_file_not_contains "settings-uninstall: session-init removed" "$settings_uninstall/settings.json" "session-init.py"
-assert_file_not_contains "settings-uninstall: run-tests removed" "$settings_uninstall/settings.json" "run-tests.sh"
+assert_file_not_contains "settings-uninstall: run-tests removed" "$settings_uninstall/settings.json" "run-tests.py"
 assert_file_not_contains "settings-uninstall: auto-capture removed" "$settings_uninstall/settings.json" "auto-capture.py"
-assert_file_not_contains "settings-uninstall: statusLine removed" "$settings_uninstall/settings.json" "statusline-command.sh"
+assert_file_not_contains "settings-uninstall: statusLine removed" "$settings_uninstall/settings.json" "statusline.py"
 # User keys preserved
 assert_file_contains "settings-uninstall: cleanupPeriodDays preserved" "$settings_uninstall/settings.json" "cleanupPeriodDays"
 assert_file_contains "settings-uninstall: enabledPlugins preserved" "$settings_uninstall/settings.json" "my-plugin"
@@ -630,7 +630,7 @@ cat > "$settings_dedup/settings.json" <<'DEDUP'
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/format-python.sh"
+            "command": "$HOME/.claude/hooks/format-python.py"
           }
         ]
       },
@@ -639,7 +639,7 @@ cat > "$settings_dedup/settings.json" <<'DEDUP'
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/format-python.sh"
+            "command": "$HOME/.claude/hooks/format-python.py"
           }
         ]
       }
@@ -654,7 +654,7 @@ sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_dedup/settings.js
 # sensitive-file-guard appears in 2 PreToolUse entries in reference (Read and Bash matchers)
 # The dupes above are all Read matcher, so after dedup: 1 Read + 1 Bash = 2
 assert_eq "settings-dedup: sensitive-file-guard deduped" "2" "$sensitive_count"
-format_count=$(grep -c "format-python.sh" "$settings_dedup/settings.json" || true)
+format_count=$(grep -c "format-python.py" "$settings_dedup/settings.json" || true)
 assert_eq "settings-dedup: format-python deduped" "1" "$format_count"
 # User hook preserved
 assert_file_contains "settings-dedup: user hook preserved" "$settings_dedup/settings.json" "my-custom-hook.sh"
@@ -708,7 +708,7 @@ assert_file_not_contains "settings-upgrade: old-renamed-hook gone" "$settings_up
 assert_file_contains "settings-upgrade: user hook preserved" "$settings_upgrade/settings.json" "my-custom-hook.sh"
 # Current reference hooks present
 assert_file_contains "settings-upgrade: sensitive-file-guard added" "$settings_upgrade/settings.json" "sensitive-file-guard.py"
-assert_file_contains "settings-upgrade: format-python added" "$settings_upgrade/settings.json" "format-python.sh"
+assert_file_contains "settings-upgrade: format-python added" "$settings_upgrade/settings.json" "format-python.py"
 
 # --- 36. Settings upgrade: changed command format replaced cleanly ---
 

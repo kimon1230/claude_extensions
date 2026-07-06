@@ -8,22 +8,27 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 
 ```
 ├── CLAUDE.md                   # Global instructions (@imported into ~/.claude/CLAUDE.md)
-├── install.sh                  # Interactive installer — pick components, symlink into ~/.claude/
-├── uninstall.sh                # Interactive uninstaller — restore backups or remove symlinks
-├── hooks/                      # Event-driven hooks (shell + Python)
-│   ├── format-python.sh        # PostToolUse: auto-format .py files with ruff + black
-│   ├── run-tests.sh            # Stop: run pytest when Claude finishes responding
+├── install.sh                  # POSIX installer (symlink-based) — pick components into ~/.claude/
+├── uninstall.sh                # POSIX uninstaller — restore backups or remove symlinks
+├── hooks/                      # Event-driven hooks (Python, stdlib only)
+│   ├── format-python.py        # PostToolUse: auto-format .py files with ruff + black
+│   ├── format_python_mod.py    # Importable module for format-python.py
+│   ├── run-tests.py            # Stop: run pytest when Claude finishes responding
+│   ├── run_tests_mod.py        # Importable module for run-tests.py
 │   ├── session-init.py         # SessionStart: increment session count, log entry count
 │   ├── session_init_mod.py     # Importable module for session-init.py
 │   ├── auto-capture.py         # SessionEnd: generate entries from git diff at session end
 │   ├── auto_capture_mod.py     # Importable module for auto-capture.py
 │   ├── sensitive-file-guard.py # PreToolUse: block reads of .env, SSH keys, credentials
 │   ├── sensitive_file_guard_mod.py # Importable module for sensitive-file-guard.py
+│   ├── statusline.py           # statusLine: user@host:cwd + model + context bar (cross-platform)
+│   ├── statusline_mod.py       # Importable module for statusline.py
 │   └── lib/                    # Shared Python libraries (stdlib only)
 │       ├── entries.py           # Entry parsing/serialization (typed entries, section-aware)
 │       ├── fileutil.py          # Atomic writes, safe JSON read/write with .bak fallback
 │       ├── paths.py             # Project name and status path resolution
-│       └── scribe.py            # Git diff classification (file type detection, entry generation)
+│       ├── scribe.py            # Git diff classification (file type detection, entry generation)
+│       └── platformutil.py      # Cross-platform venv (bin/Scripts + .exe) + walk_up helpers
 ├── skills/                     # Custom slash-command skills (/skill-name)
 │   ├── save/                   # /save — checkpoint session progress to status files
 │   ├── critical-review/        # /critical-review — parallel subagent plan review
@@ -35,16 +40,15 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 │   ├── javascript.md           # package manager detection, ES modules, TypeScript prefs
 │   ├── shell.md                # $HOME over ~, guard tool availability, pipefail
 │   └── review-output-contract.md  # shared verbatim prompt fragments for /code-review + /security-audit
-├── tests/                      # Test suite (296 Python + 91 shell installer + 27 shell statusline)
-├── statusline-command.sh       # Custom status line: user@host:cwd + model + context bar
-└── settings.json.reference     # Reference settings.json for ~/.claude/settings.json
+├── tests/                      # Test suite (pytest + shell installer)
+└── settings.json.reference     # Reference settings.json
 ```
 
 ## Hooks
 
-### `format-python.sh` (PostToolUse)
+### `format-python.py` (PostToolUse)
 
-Runs after every `Edit` or `Write` on `.py` files. Finds `ruff` and `black` in the project's `.venv` (walking up from the edited file). Skips formatting if no venv is found. Runs `ruff check --fix` first (import sorting, auto-fixes), then `black` for final formatting.
+Runs after every `Edit` or `Write` on `.py` files. Finds `ruff` and `black` in the project's `.venv` (walking up from the edited file, bounded by the git repo root), resolving `.venv/bin` on POSIX or `.venv\Scripts\*.exe` on Windows. Skips formatting if no venv is found or the file is outside a git repo (CWE-427). Runs `ruff check --fix` first (import sorting, auto-fixes), then `black` for final formatting.
 
 ### `session-init.py` (SessionStart)
 
@@ -61,7 +65,7 @@ Runs once at session end. Resolves the project directory (`CLAUDE_PROJECT_DIR`, 
 3. Appends new observations to a `## Auto-captured` section in `session-progress.md`
 4. `/save` later reviews and promotes these entries into the main Completed section
 
-### `run-tests.sh` (Stop)
+### `run-tests.py` (Stop)
 
 Runs `pytest` after Claude finishes responding, but only when:
 - The project has a `pyproject.toml`/`setup.py`/`setup.cfg`
@@ -106,7 +110,7 @@ Language-specific conventions loaded only when working with matching files (via 
 
 ## Status Line
 
-`statusline-command.sh` renders a PS1-style prompt in the Claude Code UI:
+`hooks/statusline.py` renders a PS1-style prompt in the Claude Code UI:
 
 ```
 user@host:~/project (Opus 4.8) [████████░░ 80%] ~$1.23
@@ -146,7 +150,9 @@ Native context compaction (built into Claude Code) summarizes the live conversat
 
 ## Installation
 
-This repo is the canonical source for all Claude Code configuration. The install script adds an `@import` line to your existing `~/.claude/CLAUDE.md` (non-destructive — your customizations are preserved), symlinks other components (hooks, skills, rules, status line) into `~/.claude/`, and auto-merges hook registrations into `~/.claude/settings.json`.
+This repo is the canonical source for all Claude Code configuration, installed via `install.sh` (symlink-based, macOS / Linux). Windows users: see [Windows](#windows) below.
+
+The install script adds an `@import` line to your existing `~/.claude/CLAUDE.md` (non-destructive — your customizations are preserved), symlinks other components (hooks, skills, rules, status line) into `~/.claude/`, and auto-merges hook registrations into `~/.claude/settings.json`.
 
 ```bash
 ./install.sh
@@ -175,5 +181,29 @@ Since hooks, skills, and rules are symlinked (not copied), pulling new changes f
 ### Uninstalling
 
 Run `./uninstall.sh` — it discovers all symlinks in `~/.claude/` pointing into the repo, removes the `@import` block from `CLAUDE.md`, cleans up hook/statusline entries from `settings.json`, and offers to remove orphaned `.bak` files. Your custom settings and original `CLAUDE.md` content are preserved.
+
+## Windows
+
+There is **no native-Windows installer** (`install.sh` / `uninstall.sh` are bash and the settings merge uses `jq`). Both Windows surfaces are supported, but only the CLI path is automated. The runtime hooks are cross-platform Python (they resolve `.venv\Scripts\*.exe` and guard POSIX-only `chmod`), so once wired up they run correctly on either.
+
+### Claude Code CLI — via WSL2 (automated)
+
+Run the CLI inside WSL2 and install exactly as on Linux:
+
+1. **Install WSL2** (once, from an admin PowerShell): `wsl --install`, then reboot and open your Linux distro (Ubuntu by default).
+2. **Inside the WSL2 shell**, install Claude Code and the prerequisites (`git`, `python3`, `jq`), then clone this repo *into the WSL2 filesystem* (e.g. `~/claude_extensions`, not `/mnt/c/...` — avoid the Windows drive mount for speed and correct permissions).
+3. **Run the installer** from the repo: `./install.sh`.
+4. **Use Claude Code from the WSL2 shell** — the CLI directly, or VS Code with the *WSL* remote extension. Config lives in the WSL2 home (`~/.claude/`), separate from the native-Windows `%USERPROFILE%\.claude\`.
+
+### Claude desktop app (Code tab) — native Windows (manual)
+
+The desktop app's **Code** tab runs Claude Code natively on Windows and [shares the same config as the CLI](https://code.claude.com/docs/en/settings) — it reads `%USERPROFILE%\.claude\` (`settings.json`, `CLAUDE.md`, `skills/`, `rules/`) and **does execute hooks**, run under **Git Bash** (which the app requires you to install on first launch). It *cannot* operate on a WSL2 project locally (its environments are Local, cloud Remote, and SSH only), so the WSL2 install above does **not** cover it.
+
+With no installer, wire it up by hand:
+
+1. Install **[Git for Windows](https://git-scm.com/downloads/win)** (the app requires it) — this provides the Git Bash shell that runs the hooks.
+2. **Copy** this repo's `hooks/`, `skills/`, and `rules/` into `%USERPROFILE%\.claude\`. No symlinks on Windows, so re-copy after each `git pull`.
+3. Add the import line to `%USERPROFILE%\.claude\CLAUDE.md` (create it if absent): `@C:/path/to/claude_extensions/CLAUDE.md`.
+4. Merge the hook and `statusLine` entries from `settings.json.reference` into `%USERPROFILE%\.claude\settings.json`. Keep the forward-slash `$HOME/...` paths (Git Bash expands them), but **replace `python3`** with an interpreter that exists on your machine — `python`, the `py` launcher, or a full `C:/path/to/python.exe` — because `python3` is often not on `PATH` in Git Bash on Windows.
 
 See [DEVELOPER.md](DEVELOPER.md) for development setup, testing, and architecture notes.

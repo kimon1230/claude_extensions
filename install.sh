@@ -156,7 +156,7 @@ merge_settings_json() {
         if $ref_sl != null then
             if (.statusLine // null) == null then
                 .statusLine = $ref_sl
-            elif (.statusLine.command // "" | contains(".claude/statusline-command.sh")) then
+            elif (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then
                 .statusLine = $ref_sl
             else .
             end
@@ -246,9 +246,9 @@ check_overlap "$REPO_DIR" "$CLAUDE_DIR" || exit 1
 # Component discovery
 # ---------------------------------------------------------------------------
 
-declare -a COMPONENTS=(
-    "Status line|$REPO_DIR/statusline-command.sh|$CLAUDE_DIR/statusline-command.sh"
-)
+# The status line ships as hooks/statusline.py and is discovered by the hooks
+# glob below (no special-case entry needed).
+declare -a COMPONENTS=()
 
 # Discover hooks (skip symlinks)
 for f in "$REPO_DIR"/hooks/*.sh "$REPO_DIR"/hooks/*.py; do
