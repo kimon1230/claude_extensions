@@ -30,6 +30,20 @@ def _run_main(payload: dict, monkeypatch) -> str:
     return cap.getvalue()
 
 
+def _blocked_reason(out: str) -> str:
+    """Assert *out* is a PreToolUse deny and return its reason text.
+
+    Pins the documented output contract: ``hookSpecificOutput`` with
+    ``permissionDecision: "deny"`` (not the legacy top-level ``decision``).
+    """
+    result = json.loads(out)
+    hso = result["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["permissionDecision"] == "deny"
+    assert "decision" not in result  # legacy top-level field must be gone
+    return hso["permissionDecisionReason"]
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for _is_sensitive
 # ---------------------------------------------------------------------------
@@ -211,29 +225,21 @@ class TestReadToolBlocking:
 
     def test_read_env_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Read", {"file_path": "/project/.env"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
-        assert ".env" in result["reason"]
+        reason = _blocked_reason(_run_main(payload, monkeypatch))
+        assert ".env" in reason
 
     def test_read_ssh_key_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Read", {"file_path": "/home/user/.ssh/id_rsa"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
-        assert "id_rsa" in result["reason"]
+        reason = _blocked_reason(_run_main(payload, monkeypatch))
+        assert "id_rsa" in reason
 
     def test_read_credentials_json_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Read", {"file_path": "/app/credentials.json"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
     def test_read_aws_credentials_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Read", {"file_path": "/home/user/.aws/credentials"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
 
 class TestReadToolAllowed:
@@ -275,33 +281,23 @@ class TestBashToolBlocking:
 
     def test_cat_env_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Bash", {"command": "cat .env"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
     def test_grep_env_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Bash", {"command": "grep KEY .env.production"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
     def test_cat_ssh_key_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Bash", {"command": "cat /home/user/.ssh/id_rsa"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
     def test_cat_credentials_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Bash", {"command": "cat credentials.json"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
     def test_head_pem_blocked(self, monkeypatch) -> None:
         payload = _make_payload("Bash", {"command": "head -n 5 server.pem"})
-        out = _run_main(payload, monkeypatch)
-        result = json.loads(out)
-        assert result["decision"] == "block"
+        _blocked_reason(_run_main(payload, monkeypatch))
 
 
 class TestBashToolAllowed:
@@ -345,16 +341,142 @@ class TestBashToolAllowed:
 # ---------------------------------------------------------------------------
 
 
-class TestOtherToolsIgnored:
-    """Non-Read, non-Bash tools should always pass through."""
+class TestGrepToolBlocking:
+    """Grep tool payloads that should be blocked (Grep can print file contents)."""
 
-    def test_edit_tool_ignored(self, monkeypatch) -> None:
-        payload = _make_payload("Edit", {"file_path": "/project/.env"})
+    def test_grep_env_path_blocked(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "SECRET", "path": "/project/.env"})
+        reason = _blocked_reason(_run_main(payload, monkeypatch))
+        assert ".env" in reason
+
+    def test_grep_content_mode_env_blocked(self, monkeypatch) -> None:
+        payload = _make_payload(
+            "Grep", {"pattern": "KEY", "path": ".env.production", "output_mode": "content"}
+        )
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+    def test_grep_ssh_key_path_blocked(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": ".", "path": "/home/user/.ssh/id_rsa"})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+    def test_grep_concrete_glob_blocked(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "-----BEGIN", "glob": "*.pem"})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+    def test_grep_aws_credentials_blocked(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "key", "path": "/home/user/.aws/credentials"})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+
+class TestGrepGlobWildcardBlocking:
+    """Glob-aware matching: wildcarded forms of sensitive patterns must block.
+
+    Regression guard for the v0.10 bypass where the glob field was matched with
+    concrete-path logic, so ``.env*``/``secret*``/``id_*`` etc. slipped through.
+    """
+
+    @pytest.mark.parametrize(
+        "glob",
+        [
+            ".env*",
+            ".env.*",
+            "*.env",
+            "secret*",
+            "secrets*",
+            "*secret*",
+            "credential*",
+            "credentials*",
+            "**/.aws/*",
+            "id_*",
+            "*.pem",
+            "*.p*",
+            ".npmrc*",
+        ],
+    )
+    def test_sensitive_glob_blocked(self, glob: str, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "X", "glob": glob, "output_mode": "content"})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+    def test_concrete_keyword_key_glob_blocked(self, monkeypatch) -> None:
+        # A concrete keyword-qualified .key name is still caught via _is_sensitive.
+        payload = _make_payload("Grep", {"pattern": "X", "glob": "server.key"})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+
+class TestGrepGlobNoOverBlock:
+    """Common stems must NOT be blocked — glob-aware matching keys on the
+    distinctive token, not a shared filename prefix/suffix (low-FP philosophy)."""
+
+    @pytest.mark.parametrize(
+        "glob",
+        [
+            "server.*",  # server.js/ts/py — NOT server.key
+            "server*",
+            "private.*",
+            "tls.*",
+            "ssl.*",
+            "*.local",  # collides only with the .env.local suffix
+            "*.test",
+            "*.production",
+            "*.key",  # bare *.key is allowed for Read too (keyword-gated)
+        ],
+    )
+    def test_common_stem_glob_allowed(self, glob: str, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "X", "glob": glob, "output_mode": "content"})
         out = _run_main(payload, monkeypatch)
         assert out == ""
 
-    def test_grep_tool_ignored(self, monkeypatch) -> None:
-        payload = _make_payload("Grep", {"pattern": "SECRET", "path": ".env"})
+
+class TestGrepToolAllowed:
+    """Grep tool payloads that should pass through."""
+
+    def test_grep_normal_path_allowed(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "TODO", "path": "src/"})
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+    @pytest.mark.parametrize("glob", ["*.py", "*.ts", "*.json", "config*", "test_*.py", "*.md"])
+    def test_grep_normal_glob_allowed(self, glob: str, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "def ", "glob": glob})
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+    def test_grep_no_path_or_glob_allowed(self, monkeypatch) -> None:
+        # Documented residual gap: a content grep scoped only to cwd/a directory
+        # cannot be classified by name and is NOT blocked.
+        payload = _make_payload("Grep", {"pattern": "SECRET", "output_mode": "content"})
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+    def test_grep_directory_path_allowed(self, monkeypatch) -> None:
+        # Residual gap: directory-scoped content grep passes (see README note).
+        payload = _make_payload(
+            "Grep", {"pattern": "AKIA", "path": "/proj/config", "output_mode": "content"}
+        )
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+    def test_grep_env_example_allowed(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "KEY", "path": ".env.example"})
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+    def test_grep_non_string_path_allowed(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "x", "path": 42})
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+    def test_grep_non_string_glob_allowed(self, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "x", "glob": 42})
+        out = _run_main(payload, monkeypatch)
+        assert out == ""
+
+
+class TestOtherToolsIgnored:
+    """Non-Read, non-Bash, non-Grep tools should always pass through."""
+
+    def test_edit_tool_ignored(self, monkeypatch) -> None:
+        payload = _make_payload("Edit", {"file_path": "/project/.env"})
         out = _run_main(payload, monkeypatch)
         assert out == ""
 

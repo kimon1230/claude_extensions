@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Use when you want a thorough code review of files, changes, or the entire project before shipping.
+description: Reviews code for design, correctness, performance, and test quality. Use when the user wants a code review of files, a diff or PR, or the whole project before shipping or merging.
 risk: safe
 argument-hint: "[file/dir/changes]"
 ---

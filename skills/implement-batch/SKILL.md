@@ -1,6 +1,6 @@
 ---
 name: implement-batch
-description: Use when you want to implement the next batch of a plan. Handles module implementation, testing, and validation.
+description: Implements the next batch of an existing plan, orchestrating subagents with test and lint validation. Use when the user wants to build a plan's next batch.
 risk: critical
 argument-hint: "[plan-file] [batch-number]"
 ---

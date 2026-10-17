@@ -24,6 +24,21 @@
             "type": "command",
             "command": "python3 $HOME/.claude/hooks/sensitive-file-guard.py",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/git-guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/sensitive-file-guard.py",
+            "timeout": 5
           }
         ]
       }

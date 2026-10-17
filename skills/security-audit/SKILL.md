@@ -1,12 +1,12 @@
 ---
 name: security-audit
-description: Use when you want a thorough security review of the codebase, a specific file/directory, or a set of changes before shipping.
+description: Audits code for security vulnerabilities — injection, auth and access control, crypto, secrets, SSRF, and insecure configuration. Use when the user wants a security review of the codebase, a file or directory, or a diff before shipping, or when changes touch auth, input handling, or external integrations.
 risk: safe
 risk-note: "audit is read-only; remediation phase applies source changes"
 argument-hint: "[scope] [compliance: pci-dss|hipaa|soc2|gdpr]"
 ---
 
-# Security Review
+# Security Audit
 
 This skill must only be invoked from the main session, never from a subagent.
 
@@ -16,7 +16,7 @@ a. If the user specified file paths, directories, or a description of what to re
 b. If the user said "review my changes" or similar, use `git diff HEAD` (unstaged + staged) and `git diff --cached` as the scope. If no changes exist, tell the user and stop.
 c. If no scope is specified, ask the user: "What should I review? Options: specific files/directories, recent changes (`git diff`), or the entire project."
 d. For entire-project scope, identify all source files (exclude vendored/generated code, build artifacts, lock files, and test fixtures). Prioritize by security relevance: route definitions, API handlers, middleware, auth modules, database access layers, and configuration files. Distribute files across agents by relevance to each agent's domain.
-e. Confirm scope with the user before proceeding: "I'll security-review [scope description]. Correct?"
+e. Confirm scope with the user before proceeding: "I'll run a security audit on [scope description]. Correct?"
 
 ### Web Application Detection
 
@@ -176,7 +176,7 @@ For Agent 5 (secrets), always include these files in scope regardless of user-sp
     ```yaml
     repos:
       - repo: https://github.com/gitleaks/gitleaks
-        rev: v8.21.2
+        rev: v8.21.2  # pin to the latest release
         hooks:
           - id: gitleaks
     ```

@@ -13,6 +13,7 @@
 ## Code Quality
 - **Verify before you fix**: Before implementing any fix or integration, inspect the actual data — run the command, read the API response, dump the structure, check the schema. Never assume field names, formats, or return types. One verification step up front is cheaper than three fix iterations.
 - **Audit holistically**: When debugging, audit the entire script/component for all issues in one pass. Don't fix the first thing found and stop — identify every problem, then fix them all together. Coming back for bug #2 after "fixing" bug #1 wastes rounds.
+- **Mutation checks must prove the mutation landed**: apply it with the Edit tool (errors on no match), or follow a scripted edit with `git diff --quiet -- <file> && { echo "MUTATION NOT APPLIED"; exit 1; }`. A test result against an unmutated file proves nothing. Revert with `git checkout -- <file>` and confirm the diff is empty.
 - Verify user's assumptions before accepting—correct with evidence if wrong
 - Choose language by: performance, ecosystem, deployment target, team expertise, existing codebase—not Python by default
 - If you discover a bug with unambiguous evidence (failing test, spec violation, crash), fix it immediately and document in summary. If the evidence is ambiguous, flag it with your reasoning and wait for confirmation.

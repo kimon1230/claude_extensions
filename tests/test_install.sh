@@ -467,6 +467,7 @@ assert_file_contains "settings-merge: enabledPlugins preserved" "$settings_merge
 assert_file_contains "settings-merge: user hook preserved" "$settings_merge/settings.json" "my-custom-linter.sh"
 # Reference hooks added
 assert_file_contains "settings-merge: sensitive-file-guard added" "$settings_merge/settings.json" "sensitive-file-guard.py"
+assert_file_contains "settings-merge: git-guard added" "$settings_merge/settings.json" "git-guard.py"
 assert_file_contains "settings-merge: format-python added" "$settings_merge/settings.json" "format-python.py"
 assert_file_contains "settings-merge: PostToolUse added" "$settings_merge/settings.json" "PostToolUse"
 assert_file_contains "settings-merge: SessionStart added" "$settings_merge/settings.json" "SessionStart"
@@ -481,8 +482,11 @@ assert_exists "settings-merge: backup created" "$settings_merge/settings.json.ba
 install_settings "$settings_repo" "$settings_merge"
 # Count occurrences of a unique hook command — should appear exactly once
 sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_merge/settings.json" || true)
-# sensitive-file-guard appears twice in reference (PreToolUse Read + Bash), so expect 2
-assert_eq "settings-idempotent: sensitive-file-guard count unchanged" "2" "$sensitive_count"
+# sensitive-file-guard appears 3x in reference (PreToolUse Read + Bash + Grep), so expect 3
+assert_eq "settings-idempotent: sensitive-file-guard count unchanged" "3" "$sensitive_count"
+# git-guard appears 1x in reference (PreToolUse Bash matcher only), so expect 1
+git_guard_count=$(grep -c "git-guard.py" "$settings_merge/settings.json" || true)
+assert_eq "settings-idempotent: git-guard count unchanged" "1" "$git_guard_count"
 format_count=$(grep -c "format-python.py" "$settings_merge/settings.json" || true)
 assert_eq "settings-idempotent: format-python count unchanged" "1" "$format_count"
 # User hook still there
@@ -498,6 +502,7 @@ cp "$settings_merge/settings.json" "$settings_uninstall/settings.json"
 uninstall_settings "$settings_uninstall/settings.json"
 # Reference hooks removed
 assert_file_not_contains "settings-uninstall: sensitive-file-guard removed" "$settings_uninstall/settings.json" "sensitive-file-guard.py"
+assert_file_not_contains "settings-uninstall: git-guard removed" "$settings_uninstall/settings.json" "git-guard.py"
 assert_file_not_contains "settings-uninstall: format-python removed" "$settings_uninstall/settings.json" "format-python.py"
 assert_file_not_contains "settings-uninstall: session-init removed" "$settings_uninstall/settings.json" "session-init.py"
 assert_file_not_contains "settings-uninstall: run-tests removed" "$settings_uninstall/settings.json" "run-tests.py"
@@ -651,9 +656,14 @@ DEDUP
 install_settings "$settings_repo" "$settings_dedup"
 # Duplicates should be collapsed to one each
 sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_dedup/settings.json" || true)
-# sensitive-file-guard appears in 2 PreToolUse entries in reference (Read and Bash matchers)
-# The dupes above are all Read matcher, so after dedup: 1 Read + 1 Bash = 2
-assert_eq "settings-dedup: sensitive-file-guard deduped" "2" "$sensitive_count"
+# sensitive-file-guard appears in 3 PreToolUse entries in reference (Read, Bash, Grep matchers)
+# The dupes above are all Read matcher and get stripped; re-added from reference: Read + Bash + Grep = 3
+assert_eq "settings-dedup: sensitive-file-guard deduped" "3" "$sensitive_count"
+# git-guard shares the Bash matcher with sensitive-file-guard; both must survive dedup
+# (sensitive-file-guard count 3 includes its Bash entry; git-guard count 1 is that same
+# Bash matcher's second command), proving the two-command Bash matcher is kept intact.
+git_guard_count=$(grep -c "git-guard.py" "$settings_dedup/settings.json" || true)
+assert_eq "settings-dedup: git-guard deduped (Bash matcher keeps both commands)" "1" "$git_guard_count"
 format_count=$(grep -c "format-python.py" "$settings_dedup/settings.json" || true)
 assert_eq "settings-dedup: format-python deduped" "1" "$format_count"
 # User hook preserved
@@ -708,6 +718,7 @@ assert_file_not_contains "settings-upgrade: old-renamed-hook gone" "$settings_up
 assert_file_contains "settings-upgrade: user hook preserved" "$settings_upgrade/settings.json" "my-custom-hook.sh"
 # Current reference hooks present
 assert_file_contains "settings-upgrade: sensitive-file-guard added" "$settings_upgrade/settings.json" "sensitive-file-guard.py"
+assert_file_contains "settings-upgrade: git-guard added" "$settings_upgrade/settings.json" "git-guard.py"
 assert_file_contains "settings-upgrade: format-python added" "$settings_upgrade/settings.json" "format-python.py"
 
 # --- 36. Settings upgrade: changed command format replaced cleanly ---
@@ -735,9 +746,9 @@ cat > "$settings_cmd_change/settings.json" <<'CMDCHANGE'
 CMDCHANGE
 
 install_settings "$settings_repo" "$settings_cmd_change"
-# Old format stripped, new format added
+# Old format stripped, new format added (Read + Bash + Grep = 3)
 sensitive_count=$(grep -c "sensitive-file-guard.py" "$settings_cmd_change/settings.json" || true)
-assert_eq "settings-cmd-change: correct count after upgrade" "2" "$sensitive_count"
+assert_eq "settings-cmd-change: correct count after upgrade" "3" "$sensitive_count"
 # Verify it uses the new command format from reference
 assert_file_contains "settings-cmd-change: has python3 prefix" "$settings_cmd_change/settings.json" "python3"
 

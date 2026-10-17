@@ -63,6 +63,21 @@ All shared code lives in `hooks/lib/` — stdlib only, no external dependencies:
 | `scribe.py` | Git diff classification, observation entry generation |
 | `platformutil.py` | Cross-platform venv dir (`bin`/`Scripts`) + tool (`.exe`) resolution, `walk_up` (terminates on Windows) |
 
+### Statusline
+
+`statusline_mod.render(data)` is a **pure, total** function: it takes the parsed stdin JSON (see the [statusline input schema](https://code.claude.com/docs/en/statusline)) and returns the line string. `main()` only wires stdin/stdout around it, so segments are unit-tested without a subprocess (`tests/test_statusline.py`). The contract is **never crash, never emit `null`**: each segment is built by its own helper that returns `""` on a missing or malformed field, so one bad field drops only its own segment rather than aborting the line.
+
+| Segment | Source field(s) | Notes |
+|---------|-----------------|-------|
+| model `(label[EXT] effort)` | `model.display_name`, `exceeds_200k_tokens`, `effort.level` | `Claude ` prefix stripped. `[EXT]` only on a real boolean `True`. `effort.level` (`low`/`medium`/`high`/`xhigh`/`max`) appended verbatim; any other value or an absent field (models without the effort parameter) renders nothing. |
+| context bar | `context_window.used_percentage` | Colored on *remaining* %; thresholds (`_CTX_CRITICAL`/`_CTX_WARNING`) shifted +10 for Claude Code's under-reporting. |
+| cost `~$X.XX` | `cost.total_cost_usd` | Suppressed when it formats to `0.00`. |
+| rate limits `5h:N% 7d:N%` | `rate_limits.{five_hour,seven_day}.used_percentage` | Per-window color (`_RL_WARNING` 75 / `_RL_CRITICAL` 90); each window independently omitted when absent (Claude.ai Pro/Max only, after first API response). |
+| PR `PR#<n> <state>` | `pr.number`, `pr.review_state` | Shown only while an open PR exists. Colored via `_PR_STATE_DISPLAY` (green approved / red changes / yellow pending / dim draft); number renders alone when `review_state` is absent or unrecognized. |
+| worktree `[wt:name]` | `worktree.name` | Truncated to `_WORKTREE_MAX`. |
+
+When Claude Code adds a new statusline field worth surfacing, add a helper that reads it defensively and append it in `render()` — do not thread it through an existing helper unless it's semantically part of that segment (as `effort.level` is part of the model segment).
+
 ### Context persistence data flow
 
 ```
@@ -117,10 +132,14 @@ This strip-then-add approach ensures upgrades cleanly replace stale entries (ren
 |-------|------|---------|
 | PreToolUse (Read) | `sensitive-file-guard.py` | 5s |
 | PreToolUse (Bash) | `sensitive-file-guard.py` | 5s |
+| PreToolUse (Grep) | `sensitive-file-guard.py` | 5s |
+| PreToolUse (Bash) | `git-guard.py` | 5s |
 | PostToolUse (Edit\|Write) | `format-python.py` | default |
 | SessionStart | `session-init.py` | 10s |
 | Stop | `run-tests.py` | 120s |
 | SessionEnd | `auto-capture.py` | 10s |
+
+Two guards share the `PreToolUse(Bash)` matcher (both run in parallel; most-restrictive decision wins). `git-guard.py` denies `git commit`/`git push` — enforcing the "user handles all git" rule as a hook rather than a request. It is a guardrail against the *cooperative* model's direct mistakes, not an adversarial control: it tokenizes with `shlex`, flattens unspaced shell operators, and matches the git launcher + a blocked subcommand. Shell-nesting (`bash -c`), command substitution, variable indirection, aliases, and malformed (fail-open) commands are documented accepted residual gaps, not bugs — see `hooks/git_guard_mod.py`.
 
 ### Subagent model selection in review skills
 
@@ -138,5 +157,7 @@ Synthesis runs in the main session, so it already uses whatever model the sessio
 ### Shared review output-contract fragments
 
 `rules/review-output-contract.md` is the single source of truth for the boilerplate that is **identical verbatim** between the `/code-review` and `/security-audit` subagent prompts: the scope/context opening, the findings-list-format transition, and the closing instruction. Each skill's Section 2 reads the file and inlines the named fragment at each `<<shared:…>>` marker. The skills reference it by its **installed** path `~/.claude/rules/review-output-contract.md` (symlinked there by `install.sh`'s `rules/*.md` discovery, like every other rule) so the runtime Read resolves regardless of the project CWD — a bare `rules/…` relative path would only resolve when the CWD happens to be this repo. No installer change was needed; the glob picks the file up and `uninstall.sh`'s generic symlink sweep removes it.
+
+Because it lives under `rules/`, it would otherwise auto-load into **every** session — a rule with no `paths` frontmatter loads unconditionally at CLAUDE.md priority ([docs](https://code.claude.com/docs/en/memory)). But its body is meta-documentation the skills read on demand, not behavioral guidance, so it carries a deliberately **never-matching `paths:` scope** (`**/__review-output-contract.never-autoload__`). That makes it a conditional rule that never triggers: it keeps the stable symlink path the skills read from while staying out of session context. Any future rule file that is data-for-skills rather than an always-on instruction should do the same.
 
 Only those three fragments are shared. The **field list**, **severity scale**, **"Rationalizations to Reject"**, and **"Red Flags"** are domain-specific (code review vs. security) and stay inline per skill — consolidating them would have dropped the per-domain tuning. `/critical-review` reviews a plan rather than code, so its preamble and closer differ and it does not consume the fragments. `tests/test_review_contract.py` pins this contract (shared file has no severity scale; consumers reference it, use the markers, no longer inline the fragments, and keep their own scale/rationalizations).

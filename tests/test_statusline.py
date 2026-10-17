@@ -2,8 +2,8 @@
 
 Ports all 27 assertions from tests/test_statusline.sh (each ported test carries a
 ``# ports:`` comment referencing its shell original) and adds cases for numeric
-coercion, the [EXT] boundary, cost suppression, worktree truncation, invalid
-input, and Windows-style home collapsing.
+coercion, the [EXT] indicator, the rate-limit segment, cost suppression, worktree
+truncation, invalid input, and Windows-style home collapsing.
 
 The user/host lookup is monkeypatched to fixed values so assertions are
 deterministic across machines and CI.
@@ -30,6 +30,7 @@ FULL = {
     "workspace": {"current_dir": "/tmp"},
     "cost": {"total_cost_usd": 1.23},
     "context_window": {"context_window_size": 1000000, "used_percentage": 55},
+    "exceeds_200k_tokens": True,
     "worktree": {"name": "feat-branch"},
 }
 
@@ -49,6 +50,7 @@ EXTENDED_CTX = {
     "model": {"display_name": "Claude Sonnet 4"},
     "workspace": {"current_dir": "/tmp"},
     "context_window": {"context_window_size": 1000000, "used_percentage": 30},
+    "exceeds_200k_tokens": True,
 }
 
 WORKTREE = {
@@ -195,7 +197,7 @@ def test_normal_ctx_percentage_shown():
     assert "30%" in statusline_mod.render(NORMAL_CTX)
 
 
-# --- 8. Extended context (1000000): should show [EXT] ---
+# --- 8. Usage exceeds 200k (exceeds_200k_tokens=True): should show [EXT] ---
 
 
 def test_extended_ctx_ext_shown():
@@ -257,6 +259,7 @@ def test_numeric_fields_as_strings():
         "workspace": {"current_dir": "/tmp"},
         "cost": {"total_cost_usd": "1.23"},
         "context_window": {"context_window_size": "1000000", "used_percentage": "55"},
+        "exceeds_200k_tokens": True,
     }
     out = statusline_mod.render(data)
     assert "55%" in out
@@ -273,6 +276,7 @@ def test_numeric_fields_as_floats():
         "workspace": {"current_dir": "/tmp"},
         "cost": {"total_cost_usd": 1.235},
         "context_window": {"context_window_size": 1000000.0, "used_percentage": 55.9},
+        "exceeds_200k_tokens": True,
     }
     out = statusline_mod.render(data)
     assert "55%" in out  # float truncated toward zero for bar math
@@ -305,34 +309,152 @@ def test_noncoercible_cost_skips_only_cost():
     assert "Sonnet 4" in out
 
 
-def test_noncoercible_ctx_size_skips_only_ext():
+def test_ctx_size_does_not_drive_ext():
+    """context_window_size is a static capability and must NOT light [EXT]."""
     data = {
         "model": {"display_name": "Claude Sonnet 4"},
         "workspace": {"current_dir": "/tmp"},
-        "context_window": {"context_window_size": "abc", "used_percentage": 55},
+        "context_window": {"context_window_size": 1000000, "used_percentage": 55},
     }
     out = statusline_mod.render(data)
-    assert "[EXT]" not in out
+    assert "[EXT]" not in out  # no exceeds_200k_tokens -> no tag, even on a 1M model
     assert "55%" in out  # bar still rendered
 
 
-# --- Added: [EXT] boundary (200000 vs 200001) ---
+# --- Added: [EXT] driven by exceeds_200k_tokens ---
 
 
-def test_ext_boundary_at_threshold():
-    data = {
-        "model": {"display_name": "Claude Sonnet 4"},
-        "context_window": {"context_window_size": 200000},
-    }
+def test_ext_shown_when_usage_exceeds_200k():
+    data = {"model": {"display_name": "Claude Sonnet 4"}, "exceeds_200k_tokens": True}
+    assert "[EXT]" in statusline_mod.render(data)
+
+
+def test_ext_absent_when_usage_under_200k():
+    data = {"model": {"display_name": "Claude Sonnet 4"}, "exceeds_200k_tokens": False}
     assert "[EXT]" not in statusline_mod.render(data)
 
 
-def test_ext_boundary_just_over():
+def test_ext_absent_when_field_missing():
+    data = {"model": {"display_name": "Claude Sonnet 4"}}
+    assert "[EXT]" not in statusline_mod.render(data)
+
+
+def test_ext_ignores_truthy_non_bool():
+    """Only a real boolean True lights [EXT] (guards against string 'false' etc.)."""
+    data = {"model": {"display_name": "Claude Sonnet 4"}, "exceeds_200k_tokens": "false"}
+    assert "[EXT]" not in statusline_mod.render(data)
+
+
+# --- Added: reasoning-effort level from effort.level ---
+
+
+@pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+def test_effort_level_shown(level):
+    data = {"model": {"display_name": "Claude Opus 5"}, "effort": {"level": level}}
+    out = statusline_mod.render(data)
+    assert f"(Opus 5 {level})" in out
+
+
+def test_effort_absent_when_field_missing():
+    """Models without the effort parameter omit the field — no effort suffix."""
+    data = {"model": {"display_name": "Claude Opus 5"}}
+    assert "(Opus 5)" in statusline_mod.render(data)
+
+
+def test_effort_absent_when_level_missing():
+    data = {"model": {"display_name": "Claude Opus 5"}, "effort": {}}
+    assert "(Opus 5)" in statusline_mod.render(data)
+
+
+def test_effort_unknown_level_ignored():
+    """An out-of-contract level renders nothing (no arbitrary text injected)."""
+    data = {"model": {"display_name": "Claude Opus 5"}, "effort": {"level": "bogus"}}
+    assert "(Opus 5)" in statusline_mod.render(data)
+    assert "bogus" not in statusline_mod.render(data)
+
+
+def test_effort_non_string_level_ignored():
+    data = {"model": {"display_name": "Claude Opus 5"}, "effort": {"level": 3}}
+    assert "(Opus 5)" in statusline_mod.render(data)
+
+
+def test_effort_case_insensitive():
+    data = {"model": {"display_name": "Claude Opus 5"}, "effort": {"level": "HIGH"}}
+    assert "(Opus 5 high)" in statusline_mod.render(data)
+
+
+def test_effort_combines_with_ext():
+    """[EXT] and effort coexist inside the model parens, in that order."""
     data = {
-        "model": {"display_name": "Claude Sonnet 4"},
-        "context_window": {"context_window_size": 200001},
+        "model": {"display_name": "Claude Opus 5"},
+        "exceeds_200k_tokens": True,
+        "effort": {"level": "max"},
     }
-    assert "[EXT]" in statusline_mod.render(data)
+    assert "(Opus 5[EXT] max)" in statusline_mod.render(data)
+
+
+# --- Added: PR review state from pr.* ---
+
+
+@pytest.mark.parametrize(
+    "state,text",
+    [
+        ("approved", "approved"),
+        ("changes_requested", "changes"),
+        ("pending", "pending"),
+        ("draft", "draft"),
+    ],
+)
+def test_pr_state_shown(state, text):
+    data = {
+        "model": {"display_name": "Claude Opus 5"},
+        "pr": {"number": 123, "review_state": state},
+    }
+    assert f"PR#123 {text}" in statusline_mod.render(data)
+
+
+def test_pr_no_pr_object_omitted():
+    data = {"model": {"display_name": "Claude Opus 5"}}
+    assert "PR" not in statusline_mod.render(data)
+
+
+def test_pr_number_without_state_shows_number_only():
+    """review_state may be independently absent — number still renders."""
+    data = {"model": {"display_name": "Claude Opus 5"}, "pr": {"number": 7}}
+    out = statusline_mod.render(data)
+    assert "PR#7" in out
+    assert "approved" not in out
+
+
+def test_pr_unknown_state_falls_back_to_number():
+    data = {
+        "model": {"display_name": "Claude Opus 5"},
+        "pr": {"number": 7, "review_state": "bogus"},
+    }
+    out = statusline_mod.render(data)
+    assert "PR#7" in out
+    assert "bogus" not in out
+
+
+def test_pr_no_number_no_state_omitted():
+    data = {"model": {"display_name": "Claude Opus 5"}, "pr": {}}
+    assert "PR" not in statusline_mod.render(data)
+
+
+def test_pr_state_without_number_still_shows():
+    data = {"model": {"display_name": "Claude Opus 5"}, "pr": {"review_state": "approved"}}
+    assert "PR approved" in statusline_mod.render(data)
+
+
+def test_pr_non_dict_ignored():
+    data = {"model": {"display_name": "Claude Opus 5"}, "pr": "123"}
+    assert "PR" not in statusline_mod.render(data)
+
+
+def test_pr_number_bool_not_treated_as_number():
+    """A JSON bool must not be formatted as a PR number (isinstance int guard)."""
+    data = {"model": {"display_name": "Claude Opus 5"}, "pr": {"number": True}}
+    assert "PR#True" not in statusline_mod.render(data)
 
 
 # --- Added: cost exactly 0.00 suppressed ---
@@ -451,6 +573,78 @@ def test_user_host_fallback_on_error(monkeypatch):
     monkeypatch.setattr(statusline_mod.getpass, "getuser", _boom)
     out = statusline_mod.render({"workspace": {"current_dir": "/tmp"}})
     assert "?" in out
+
+
+# --- Added: rate-limit segment ---
+
+
+def test_ratelimit_both_windows_shown():
+    data = {
+        "model": {"display_name": "Claude Sonnet 4"},
+        "rate_limits": {
+            "five_hour": {"used_percentage": 23},
+            "seven_day": {"used_percentage": 41},
+        },
+    }
+    out = statusline_mod.render(data)
+    assert "5h:23%" in out
+    assert "7d:41%" in out
+
+
+def test_ratelimit_absent_when_no_field():
+    assert "5h:" not in statusline_mod.render(MINIMAL)
+    assert "7d:" not in statusline_mod.render(MINIMAL)
+
+
+def test_ratelimit_partial_window_shown():
+    """A single present window renders without the other."""
+    data = {
+        "model": {"display_name": "Claude Sonnet 4"},
+        "rate_limits": {"five_hour": {"used_percentage": 10}},
+    }
+    out = statusline_mod.render(data)
+    assert "5h:10%" in out
+    assert "7d:" not in out
+
+
+def test_ratelimit_healthy_is_dim():
+    data = {"rate_limits": {"five_hour": {"used_percentage": 10}}}
+    out = statusline_mod.render(data)
+    assert f"{statusline_mod._DIM_WHITE}5h:10%" in out
+
+
+def test_ratelimit_warning_is_yellow():
+    data = {"rate_limits": {"seven_day": {"used_percentage": 80}}}
+    out = statusline_mod.render(data)
+    assert f"{statusline_mod._BOLD_YELLOW}7d:80%" in out
+
+
+def test_ratelimit_critical_is_red():
+    data = {"rate_limits": {"five_hour": {"used_percentage": 95}}}
+    out = statusline_mod.render(data)
+    assert f"{statusline_mod._BOLD_RED}5h:95%" in out
+
+
+def test_ratelimit_string_percentage_coerced():
+    data = {"rate_limits": {"five_hour": {"used_percentage": "23.5"}}}
+    assert "5h:23%" in statusline_mod.render(data)
+
+
+def test_ratelimit_noncoercible_skips_window():
+    data = {
+        "model": {"display_name": "Claude Sonnet 4"},
+        "rate_limits": {"five_hour": {"used_percentage": "abc"}},
+    }
+    out = statusline_mod.render(data)
+    assert "5h:" not in out
+    assert "Sonnet 4" in out  # rest of line intact
+
+
+def test_ratelimit_non_dict_ignored():
+    data = {"model": {"display_name": "Claude Sonnet 4"}, "rate_limits": "nope"}
+    out = statusline_mod.render(data)
+    assert "5h:" not in out
+    assert "Sonnet 4" in out
 
 
 # --- Added: main() entry path via stdin ---

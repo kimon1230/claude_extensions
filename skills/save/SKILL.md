@@ -1,6 +1,6 @@
 ---
 name: save
-description: Save all session progress to status tracking files. Use when you want to checkpoint work mid-session or before ending.
+description: Checkpoints session progress to status tracking files. Use to save state mid-session, after a major task, before ending, or when nearing context limits.
 risk: safe
 ---
 

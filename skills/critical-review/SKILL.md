@@ -1,6 +1,6 @@
 ---
 name: critical-review
-description: Use when you want structured feedback on a plan or document before implementation.
+description: Delivers structured, adversarial feedback on a plan or design document, surfacing risks and gaps before implementation. Use when the user wants a plan or document reviewed.
 risk: safe
 risk-note: "writes to ~/.claude/plans/ only, with user consent"
 argument-hint: "[plan-file]"

@@ -1,3 +1,16 @@
+---
+# NOT an auto-loaded rule. This file is a shared data fragment that the review
+# skills Read on demand to inline its <<shared:…>> blocks — its body is
+# meta-documentation, not behavioral guidance Claude should follow directly.
+# A rule with no `paths` field loads into every session at CLAUDE.md priority
+# (docs: "Rules without a `paths` field are loaded unconditionally"), which
+# would waste context on every session. This never-matching `paths` scope makes
+# it a conditional rule that never triggers, so it stays symlinked at the stable
+# ~/.claude/rules/ path the skills read from without ever auto-loading.
+paths:
+  - "**/__review-output-contract.never-autoload__"
+---
+
 # Shared review output-contract fragments
 
 Canonical source for the boilerplate that is **identical verbatim** between the

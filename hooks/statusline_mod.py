@@ -31,11 +31,26 @@ _RESET = "\033[00m"
 _CTX_CRITICAL = 25
 _CTX_WARNING = 40
 
-# Extended-context indicator fires above the standard 200k window.
-_EXT_THRESHOLD = 200000
+# Rate-limit thresholds (evaluated against *used* percentage of each window).
+_RL_CRITICAL = 90
+_RL_WARNING = 75
 
 # Worktree names are truncated to keep the status line compact.
 _WORKTREE_MAX = 20
+
+# PR review states (statusline `pr.review_state`) → compact label + color.
+# Any other value is treated as no state (the PR number alone renders).
+_PR_STATE_DISPLAY: dict[str, tuple[str, str]] = {
+    "approved": ("approved", _BOLD_GREEN),
+    "changes_requested": ("changes", _BOLD_RED),
+    "pending": ("pending", _BOLD_YELLOW),
+    "draft": ("draft", _DIM_WHITE),
+}
+
+# Documented reasoning-effort levels (statusline `effort.level`). Rendered
+# verbatim; any other value is treated as absent so a malformed field can't
+# inject arbitrary text into the line.
+_EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def _nested(data: dict[str, Any], *keys: str) -> Any:
@@ -76,8 +91,30 @@ def _short_cwd(cwd: str) -> str:
     return cwd
 
 
+def _effort_suffix(data: dict[str, Any]) -> str:
+    """Return `` <level>`` from ``effort.level``, or ``""`` when absent/invalid.
+
+    The field is absent whenever the current model does not support the
+    reasoning-effort parameter, so its omission is the normal case, not an
+    error. Only the documented levels render; anything else is treated as
+    absent.
+    """
+    level = _nested(data, "effort", "level")
+    if isinstance(level, str) and level.lower() in _EFFORT_LEVELS:
+        return f" {level.lower()}"
+    return ""
+
+
 def _model_part(data: dict[str, Any]) -> str:
-    """Build the ``(model[EXT])`` segment, or ``""`` when no model is present."""
+    """Build the ``(model[EXT] effort)`` segment, or ``""`` when no model.
+
+    ``[EXT]`` fires from ``exceeds_200k_tokens`` — true only once actual usage
+    crosses the fixed 200k threshold where extended-context pricing/behavior
+    kicks in. (It is *not* derived from ``context_window_size``, which is a
+    static model capability and would keep the tag lit constantly on 1M-context
+    models, conveying nothing.) The reasoning-effort level is appended when the
+    model exposes it (``effort.level``), so e.g. ``(Opus 5 high)``.
+    """
     model = _nested(data, "model", "display_name")
     if not isinstance(model, str) or not model:
         return ""
@@ -85,16 +122,10 @@ def _model_part(data: dict[str, Any]) -> str:
     if not label:
         return ""
 
-    ext_tag = ""
-    ctx_size = _nested(data, "context_window", "context_window_size")
-    if ctx_size is not None:
-        try:
-            if int(float(ctx_size)) > _EXT_THRESHOLD:
-                ext_tag = "[EXT]"
-        except (TypeError, ValueError):
-            pass
+    ext_tag = "[EXT]" if data.get("exceeds_200k_tokens") is True else ""
+    effort = _effort_suffix(data)
 
-    return f" {_BOLD_YELLOW}({label}{ext_tag}){_RESET}"
+    return f" {_BOLD_YELLOW}({label}{ext_tag}{effort}){_RESET}"
 
 
 def _ctx_part(data: dict[str, Any]) -> str:
@@ -135,6 +166,69 @@ def _cost_part(data: dict[str, Any]) -> str:
     return f" {_DIM_WHITE}~${cost_check}{_RESET}"
 
 
+def _ratelimit_part(data: dict[str, Any]) -> str:
+    """Build the `` 5h:N% 7d:N%`` subscription rate-limit segment, or ``""``.
+
+    Reads ``rate_limits.{five_hour,seven_day}.used_percentage`` — present only
+    for Claude.ai (Pro/Max) sessions after the first API response, and each
+    window may be independently absent. Each window is colored by its own usage:
+    dim when healthy, yellow past the warning threshold, red past critical.
+    """
+    rate_limits = _nested(data, "rate_limits")
+    if not isinstance(rate_limits, dict):
+        return ""
+
+    segments: list[str] = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+        pct_raw = _nested(rate_limits, key, "used_percentage")
+        if pct_raw is None:
+            continue
+        try:
+            pct = int(float(pct_raw))
+        except (TypeError, ValueError):
+            continue
+        if pct >= _RL_CRITICAL:
+            color = _BOLD_RED
+        elif pct >= _RL_WARNING:
+            color = _BOLD_YELLOW
+        else:
+            color = _DIM_WHITE
+        segments.append(f"{color}{label}:{pct}%{_RESET}")
+
+    if not segments:
+        return ""
+    return " " + " ".join(segments)
+
+
+def _pr_part(data: dict[str, Any]) -> str:
+    """Build the `` PR#<n> <state>`` segment, or ``""`` when no open PR.
+
+    Reads the ``pr`` object (present only while an open PR exists for the
+    current branch; removed once it merges/closes). ``pr.review_state`` may be
+    independently absent even when ``pr`` is present, so the number renders on
+    its own (dim) when the state is missing or unrecognized. Colored by state:
+    green approved, red changes-requested, yellow pending, dim draft.
+    """
+    pr = _nested(data, "pr")
+    if not isinstance(pr, dict):
+        return ""
+
+    number = pr.get("number")
+    has_number = isinstance(number, int) and not isinstance(number, bool)
+    label = f"PR#{number}" if has_number else "PR"
+
+    state = pr.get("review_state")
+    if isinstance(state, str) and state in _PR_STATE_DISPLAY:
+        text, color = _PR_STATE_DISPLAY[state]
+        return f" {color}{label} {text}{_RESET}"
+
+    # PR present but no usable review state — show the number alone, or nothing
+    # if there is not even a number to display.
+    if not has_number:
+        return ""
+    return f" {_DIM_WHITE}{label}{_RESET}"
+
+
 def _worktree_part(data: dict[str, Any]) -> str:
     """Build the leading ``[wt:<name>] `` tag, or ``""`` when no worktree."""
     name = _nested(data, "worktree", "name")
@@ -162,6 +256,8 @@ def render(data: dict[str, Any]) -> str:
         f"{_model_part(data)}"
         f"{_ctx_part(data)}"
         f"{_cost_part(data)}"
+        f"{_ratelimit_part(data)}"
+        f"{_pr_part(data)}"
     )
 
 

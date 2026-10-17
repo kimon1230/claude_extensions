@@ -19,9 +19,11 @@ Files in this repo are symlinked or copied into `~/.claude/` to extend Claude Co
 │   ├── session_init_mod.py     # Importable module for session-init.py
 │   ├── auto-capture.py         # SessionEnd: generate entries from git diff at session end
 │   ├── auto_capture_mod.py     # Importable module for auto-capture.py
-│   ├── sensitive-file-guard.py # PreToolUse: block reads of .env, SSH keys, credentials
+│   ├── sensitive-file-guard.py # PreToolUse: block Read/Bash/Grep of .env, SSH keys, credentials
 │   ├── sensitive_file_guard_mod.py # Importable module for sensitive-file-guard.py
-│   ├── statusline.py           # statusLine: user@host:cwd + model + context bar (cross-platform)
+│   ├── git-guard.py            # PreToolUse: block in-session git commit/push (Bash)
+│   ├── git_guard_mod.py        # Importable module for git-guard.py
+│   ├── statusline.py           # statusLine: user@host:cwd + model + context bar + cost + rate limits (cross-platform)
 │   ├── statusline_mod.py       # Importable module for statusline.py
 │   └── lib/                    # Shared Python libraries (stdlib only)
 │       ├── entries.py           # Entry parsing/serialization (typed entries, section-aware)
@@ -76,7 +78,9 @@ Outputs last 50 lines of test output to stderr on failure. Non-blocking (exit 1 
 
 ### `sensitive-file-guard.py` (PreToolUse)
 
-Blocks reads of files matching sensitive patterns before the tool executes. Intercepts both the `Read` tool (checks `file_path`) and `Bash` tool (tokenizes command with `shlex.split()`, checks each token).
+Blocks reads of files matching sensitive patterns before the tool executes. Intercepts the `Read` tool (checks `file_path`), the `Bash` tool (tokenizes command with `shlex.split()`, checks each token), and the `Grep` tool (`Grep` with `output_mode: "content"` can print file contents, so a search aimed at a sensitive file is read-equivalent and blocked regardless of `output_mode`). For Grep, the concrete `path` is matched as a path, while the `glob` is matched *glob-aware* — a pattern like `.env*`, `secret*`, `id_*`, or `**/.aws/*` that could select a sensitive file is blocked, not just a glob that literally equals a sensitive name.
+
+**Residual gap (by design):** a content-mode Grep scoped only to a *directory* or the cwd with no sensitive `glob` — e.g. `Grep(pattern="AKIA…", output_mode="content")` — cannot be classified by filename and is **not** blocked. This is inherent to any name-based filter; the guard is defense-in-depth, not a complete exfiltration control. The `Read`/`Bash`/concrete-`path` and glob-target cases are the ones it closes.
 
 **Patterns blocked** (matched against basename, case-insensitive):
 - `.env`, `.env.local`, `.env.production`, `.env.staging`, `.env.test`, `.env.development` (but `.env.example`, `.env.sample`, `.envrc` are allowed)
@@ -86,7 +90,11 @@ Blocks reads of files matching sensitive patterns before the tool executes. Inte
 - `.npmrc`, `.pypirc`
 - AWS paths: `~/.aws/credentials`, `~/.aws/config`
 
-Returns a JSON block decision with a message directing the user to read the file outside the session if needed. Never crashes — all exceptions caught and logged to stderr.
+Denies via the documented PreToolUse contract (`hookSpecificOutput.permissionDecision: "deny"`) with a message directing the user to read the file outside the session if needed. Never crashes — all exceptions caught and logged to stderr.
+
+### `git-guard.py` (PreToolUse)
+
+Denies `git commit` and `git push` in-session (shares the `Bash` matcher with the sensitive-file guard), enforcing the "user handles all git" rule as a hook rather than a request. It tokenizes the command with `shlex.split()`, flattens unspaced shell operators, and matches the git launcher plus a blocked subcommand — catching the direct forms (`git push`, `cd x && git commit`, `sudo git push`, `git.exe commit`, `git push;echo`). It is a guardrail against accidental commits/pushes, **not** an adversarial control: `bash -c "git push"`, command substitution, variable indirection, and aliases are documented residual gaps. Same deny contract as above; run the command yourself outside the session when you do need it.
 
 ## Skills
 
@@ -113,13 +121,17 @@ Language-specific conventions loaded only when working with matching files (via 
 `hooks/statusline.py` renders a PS1-style prompt in the Claude Code UI:
 
 ```
-user@host:~/project (Opus 4.8) [████████░░ 80%] ~$1.23
+user@host:~/project (Opus 5 high) [████████░░ 80%] ~$1.23 5h:23% 7d:41% PR#42 approved
 ```
 
 - Green/yellow/red context bar based on remaining context window
 - Model name (with "Claude " prefix stripped for brevity)
+- `[EXT]` tag after the model name when `exceeds_200k_tokens` is true — i.e. actual usage has crossed the fixed 200k threshold. (It is *not* derived from `context_window_size`, which is a static model capability and would keep the tag lit constantly on 1M-context models.)
+- Reasoning-effort level after the model name (`effort.level`: `low`/`medium`/`high`/`xhigh`/`max`), reflecting live `/effort` changes. Omitted for models that don't expose the effort parameter.
 - Thresholds shifted +10% to compensate for underreported usage
 - Cost estimate (`~$X.XX`) — the `~` prefix indicates this is an approximate API-equivalent cost, not an actual charge. Claude Code reports `total_cost_usd` even on Pro/Max subscriptions as a usage-equivalent metric. Suppressed when $0.00.
+- Subscription rate-limit windows (`5h:N% 7d:N%`) from `rate_limits.{five_hour,seven_day}.used_percentage` — present only for Claude.ai (Pro/Max) sessions after the first API response. Each window is dim when healthy, yellow past 75%, red past 90%; absent windows are omitted.
+- Open-PR status (`PR#<n> <state>`) from `pr.number`/`pr.review_state` — shown only while an open PR exists for the current branch. Colored by review state: green `approved`, red `changes` (changes_requested), yellow `pending`, dim `draft`. The number renders alone when the review state is absent.
 
 ## Context Persistence
 

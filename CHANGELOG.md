@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10]
+
+**Existing installs:** re-run `install.sh` to pick up the new `Grep` matcher and the `git-guard` hook (re-merges `settings.json`).
+
+### Security
+
+- **`sensitive-file-guard` now intercepts the `Grep` tool** — previously it matched only `Read` and `Bash`, leaving a bypass: the `Grep` tool with `output_mode: "content"` can print file contents, so `Grep(pattern, path=".env")` read secrets straight past the guard. Added a `Grep` matcher in `settings.json.reference` and `_check_grep_tool()`. The concrete `path` is matched as a path; the `glob` is matched **glob-aware** via `_glob_targets_sensitive()`, which keys on each family's *distinctive* token so it blocks the wildcarded form of every protected pattern (`.env*`, `*.env`, `secret*`, `credential*`, `id_*`, `*.pem`/`*.p*`, `**/.aws/*`) without over-blocking common stems — `server.*`, `*.local`, `tls.*`, and bare `*.key` stay allowed, mirroring the guard's existing low-false-positive policy (it already allows `*.key`/`translation.key` for Read; a concrete `server.key` is still caught by `_is_sensitive`). Two rounds of adversarial review shaped this: the first found the initial glob check reused concrete-path logic (bypass on `.env*` etc.); the second found the naive fix over-blocked common stems (`server.*` → would refuse a normal `grep --glob server.*`). The `pattern` is a regex, not a path, so it is not checked. **Residual, documented gap:** a content-mode Grep scoped only to a directory/cwd with no sensitive `glob` cannot be classified by filename and is not blocked — inherent to any name-based filter.
+- **PreToolUse deny migrated to the documented contract** — the guard now emits `hookSpecificOutput.permissionDecision: "deny"` (with `permissionDecisionReason`) instead of the legacy top-level `{"decision": "block"}`, which is undocumented for `PreToolUse`. The legacy form still works in current Claude Code (verified live), so this is future-proofing the security control against a release dropping it; one change covers the `Read`/`Bash`/`Grep` emit site.
+- **New `git-guard` hook denies in-session `git commit`/`git push`** — turns the "user handles all git" rule from a CLAUDE.md request into hook enforcement (docs: must-happen-every-time rules belong in a `PreToolUse` hook; a deny is honored even under `bypassPermissions`). `git_guard_mod.py` tokenizes the `Bash` command with `shlex`, flattens unspaced shell operators (so `git push;echo` is caught), and matches the git launcher (incl. `git.exe`, `sudo git`, env-prefix, absolute path) plus a blocked subcommand, correctly skipping global options (`git -C /path commit`) and never misfiring on a blocked word used as an argument (`git stash push`, `git log commit` stay allowed). Registered as a second command on the existing `Bash` matcher. It is a guardrail against the *cooperative* model's accidental commits/pushes, **not** an adversarial control — shell nesting (`bash -c`), command substitution, variable indirection, aliases, and malformed (fail-open) input are documented accepted residual gaps. Plan critical-reviewed to convergence (2 rounds, clean); the review empirically caught the unspaced-operator bug the final design fixes.
+
+### Changed
+
+- **Statusline `[EXT]` now fires from `exceeds_200k_tokens`** instead of `context_window.context_window_size > 200000`. The old source was a static model capability, so on 1M-context models (e.g. Opus 4.8) the tag was always lit and conveyed nothing; the new source lights it only once actual usage crosses the fixed 200k threshold where extended-context pricing/behavior applies.
+
+### Added
+
+- **Statusline subscription rate-limit segment** — renders `5h:N% 7d:N%` from `rate_limits.{five_hour,seven_day}.used_percentage` (present only for Claude.ai Pro/Max sessions after the first API response). Each window is colored by its own usage (dim / yellow >75% / red >90%); absent windows are omitted.
+- **Statusline reasoning-effort level** — the model segment now appends the live effort level from `effort.level` (`low`/`medium`/`high`/`xhigh`/`max`), e.g. `(Opus 5 high)`, reflecting mid-session `/effort` changes. Only the documented levels render; the field is omitted for models that don't expose the effort parameter, so nothing shows there.
+- **Statusline open-PR status** — renders `PR#<n> <state>` from `pr.number`/`pr.review_state` while an open PR exists for the current branch, colored by review state (green `approved` / red `changes` / yellow `pending` / dim `draft`). The number renders alone when the review state is absent; the whole segment is omitted when there is no open PR.
+
+### Fixed
+
+- **`rules/review-output-contract.md` no longer loads into every session** — it lives under `rules/` (to get symlinked to a stable `~/.claude/rules/` path the review skills `Read`), but a rule with no `paths` frontmatter loads unconditionally at CLAUDE.md priority, so its ~40 lines of meta-documentation were consuming context in every session for no behavioral benefit. Added a deliberately never-matching `paths:` scope so it stays symlinked and on-demand-readable but never auto-loads.
+
 ## [0.9]
 
 ### Changed
