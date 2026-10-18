@@ -90,6 +90,8 @@ Session start/compact → session-init.py → increments session_count + re-inje
 
 ### Install mechanism
 
+Skill discovery only offers `skills/*/` directories that contain a `SKILL.md`. That keeps out Claude Code's auto-synced bundle directory (`skills/synced/<bucket>/…`, gitignored), which shows up in the working tree whenever `~/.claude/skills` is a legacy whole-directory symlink into the repo. `tests/test_install.sh` (test 11) pins this.
+
 `install.sh` and `uninstall.sh` both support `--source-only` to allow tests to source guard functions without executing the installer:
 
 ```bash

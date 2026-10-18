@@ -258,10 +258,11 @@ for f in "$REPO_DIR"/hooks/*.sh "$REPO_DIR"/hooks/*.py; do
     COMPONENTS+=("Hook: $name|$f|$CLAUDE_DIR/hooks/$name")
 done
 
-# Discover skills (skip symlinks)
+# Discover skills (skip symlinks and dirs without a SKILL.md, e.g. skills/synced/)
 for d in "$REPO_DIR"/skills/*/; do
     [ -d "${d%/}" ] || continue
     [ ! -L "${d%/}" ] || continue
+    [ -f "${d}SKILL.md" ] || continue
     name=$(basename "$d")
     COMPONENTS+=("Skill: $name|$d|$CLAUDE_DIR/skills/$name")
 done

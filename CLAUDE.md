@@ -24,6 +24,12 @@
   - Fix failures before moving to the next batch. If unresolvable after 3 attempts, stop — report what you tried, what failed, and the likely root cause.
 - When the goal is subjective or aesthetic ("organic layout", "like the reference", "feels right"), STOP. Ask for concrete, measurable acceptance criteria before implementing. Don't guess at creative intent.
 
+## Shell Commands
+Paths that are computed at run time, and sed scripts beyond a plain line range, can't be checked against `blockReadsOutsideWorkingDirectories`, so each one needs manual approval.
+- Read commands (`grep`, `cat`, `head`, `wc`, `sed -n`…) take literal absolute paths: no `~`, `$HOME`/`$VAR`, `$(...)`, globs (`src/*.go`), or `cd dir && grep relative`. Use `grep -rn --include='*.go' PATTERN /abs/dir` instead of globs, and the Read tool for known files.
+- sed: only a plain numeric `sed -n 'N,Mp'`. For a section, `grep -n` the line numbers, then Read with offset/limit. Never `sed -i` or regex ranges (`sed -n '/a/,/b/p'`); edit with the Edit tool.
+- Put these rules in every subagent prompt.
+
 ## Planning
 For complex tasks, use plan mode (Shift+Tab). Store plans in `~/.claude/plans/<project-name>/` with descriptive filenames — nowhere else. Delete completed plans.
 

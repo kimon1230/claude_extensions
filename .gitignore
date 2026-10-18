@@ -5,8 +5,13 @@ __pycache__/
 .venv/
 venv/
 
-# Testing
+# Testing / lint caches
 .pytest_cache/
+.ruff_cache/
+
+# Claude Code's auto-synced skill bundles (written into ~/.claude/skills/synced/,
+# which lands here when ~/.claude/skills is a whole-directory symlink to this repo)
+skills/synced/
 
 # IDE / editor state
 .idea/

@@ -114,7 +114,7 @@ Language-specific conventions loaded only when working with matching files (via 
 - **JavaScript/TypeScript**: Detect package manager from lock files. ES modules, strict TypeScript, `const` by default.
 - **Shell**: `$HOME` not `~`, guard with `command -v`, `set -o pipefail`.
 
-`rules/review-output-contract.md` is not a language rule (no `paths` frontmatter). It is the single source of truth for the boilerplate prompt fragments shared verbatim between `/code-review` and `/security-audit`; each skill reads it and inlines the fragments at marked points. The severity scale, field list, rationalizations, and red flags stay per-skill (they differ by domain).
+`rules/review-output-contract.md` is not a language rule: its `paths` frontmatter deliberately matches nothing, so it never auto-loads into a session. It is the single source of truth for the boilerplate prompt fragments shared verbatim between `/code-review` and `/security-audit`; each skill reads it and inlines the fragments at marked points. The severity scale, field list, rationalizations, and red flags stay per-skill (they differ by domain).
 
 ## Status Line
 
@@ -185,6 +185,8 @@ You'll be prompted for each component and for settings.json updates. The install
 - **Migrate old CLAUDE.md symlinks** — older versions symlinked `CLAUDE.md` directly; running `install.sh` again replaces the symlink with an `@import`, restoring your original content from backup.
 
 When everything is already current, the installer reports "already installed — skipping" for each component and exits without prompting.
+
+**Very early installs** symlinked whole directories (`~/.claude/skills` → `<repo>/skills`, same for `hooks/` and `rules/`) instead of the per-component links `install.sh` creates. With that layout, anything Claude Code or another project writes into `~/.claude/skills/` lands in the repo working tree. One example is the auto-synced skill bundle under `skills/synced/`, which is gitignored and skipped by the installer for this reason. Check with `ls -l ~/.claude | grep -- '->'`. To migrate, remove the directory symlinks, re-run `install.sh`, and move any non-repo content (e.g. `skills/synced/`) into the new real `~/.claude/skills/`.
 
 ### Updating
 

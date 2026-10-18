@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **`CLAUDE.md` Shell Commands section**: read commands must take literal absolute paths (no `~`, `$VAR`, `$(...)`, globs, or `cd dir && …`), and `sed` is limited to a plain numeric `sed -n 'N,Mp'` (no `sed -i`, no regex ranges). Paths computed at run time can't be checked against `blockReadsOutsideWorkingDirectories`, so each such command used to trigger a manual approval prompt. Subagent prompts must carry the same rules.
+- **`CLAUDE.md` mutation-check rule**: a mutation test must prove the mutation was applied, either via the Edit tool (which errors on no match) or a `git diff --quiet` guard after a scripted edit, and must be reverted to an empty diff afterwards. A passing test against an unmutated file proves nothing.
 - **Statusline `[EXT]` now fires from `exceeds_200k_tokens`** instead of `context_window.context_window_size > 200000`. The old source was a static model capability, so on 1M-context models (e.g. Opus 4.8) the tag was always lit and conveyed nothing; the new source lights it only once actual usage crosses the fixed 200k threshold where extended-context pricing/behavior applies.
 
 ### Added
@@ -24,6 +26,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Claude Code's auto-synced skill bundle no longer pollutes the repo**: on installs where `~/.claude/skills` is a legacy whole-directory symlink into the repo, Claude Code writes its synced bundle (~80k lines of Anthropic docx/pptx/xlsx/pdf/skill-creator skills) to `skills/synced/`. That bundle had been committed and was failing `ruff check .` with 18 errors. `skills/synced/` is now gitignored (as is `.ruff_cache/`), and `install.sh` skill discovery skips any directory without a `SKILL.md`, so it no longer offers `synced` as an installable skill. The README **Upgrading** section documents migrating off the directory-symlink layout.
+- **Removed a project-specific `release` skill** (RHG Authenticator release prep) that had landed in `skills/` via the same directory symlink, which made it load in every project. It now lives in that project's `.claude/skills/`.
+- **README** no longer claims `review-output-contract.md` has no `paths` frontmatter.
 - **`rules/review-output-contract.md` no longer loads into every session** — it lives under `rules/` (to get symlinked to a stable `~/.claude/rules/` path the review skills `Read`), but a rule with no `paths` frontmatter loads unconditionally at CLAUDE.md priority, so its ~40 lines of meta-documentation were consuming context in every session for no behavioral benefit. Added a deliberately never-matching `paths:` scope so it stays symlinked and on-demand-readable but never auto-loads.
 
 ## [0.9]

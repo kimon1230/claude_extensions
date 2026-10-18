@@ -181,14 +181,19 @@ assert_eq "discovery: only real file found" "real-hook.sh" "${discovered[*]}"
 mkdir -p "$mock_repo/skills/real-skill"
 echo "skill" > "$mock_repo/skills/real-skill/SKILL.md"
 ln -s "$mock_repo/skills/real-skill" "$mock_repo/skills/fake-skill"
+mkdir -p "$mock_repo/skills/synced/bucket/docx"
+echo "skill" > "$mock_repo/skills/synced/bucket/docx/SKILL.md"
 
 discovered=()
 for d in "$mock_repo"/skills/*/; do
     [ -d "${d%/}" ] || continue
     [ ! -L "${d%/}" ] || continue
+    [ -f "${d}SKILL.md" ] || continue
     discovered+=("$(basename "$d")")
 done
 assert_eq "discovery: only real skill dir found" "real-skill" "${discovered[*]}"
+assert_eq "discovery: install.sh requires SKILL.md" "1" \
+    "$(grep -cF '[ -f "${d}SKILL.md" ] || continue' "$INSTALL")"
 
 # --- 12. Post-link verification: broken symlink detected ---
 
