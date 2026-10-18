@@ -104,6 +104,16 @@ assert_file_not_contains() {
 . "$INSTALL" --source-only
 . "$UNINSTALL" --source-only
 
+# mock_installed_hooks CLAUDE_DIR: stand-in hooks/ holding every repo hook, so
+# the settings merge (which skips hooks that aren't installed) registers them all.
+mock_installed_hooks() {
+    mkdir -p "$1/hooks"
+    local f
+    for f in "$SCRIPT_DIR"/hooks/*.py; do
+        : > "$1/hooks/$(basename "$f")"
+    done
+}
+
 # --- 1. Overlap guard: repo inside claude ---
 
 rc=0
@@ -183,17 +193,20 @@ echo "skill" > "$mock_repo/skills/real-skill/SKILL.md"
 ln -s "$mock_repo/skills/real-skill" "$mock_repo/skills/fake-skill"
 mkdir -p "$mock_repo/skills/synced/bucket/docx"
 echo "skill" > "$mock_repo/skills/synced/bucket/docx/SKILL.md"
+mkdir -p "$mock_repo/skills/no-skill-md"
 
-discovered=()
-for d in "$mock_repo"/skills/*/; do
-    [ -d "${d%/}" ] || continue
-    [ ! -L "${d%/}" ] || continue
-    [ -f "${d}SKILL.md" ] || continue
-    discovered+=("$(basename "$d")")
+discovered=$(discover_skills "$mock_repo" | xargs -n1 basename | tr '\n' ' ')
+assert_eq "discovery: only real skill dir with SKILL.md found" "real-skill " "$discovered"
+
+# --- 11b. *_mod.py companion mapping ---
+
+assert_eq "companion: git_guard_mod" "git-guard.py" "$(companion_entry git_guard_mod.py)"
+assert_eq "companion: format_python_mod" "format-python.py" "$(companion_entry format_python_mod.py)"
+assert_eq "companion: statusline_mod" "statusline.py" "$(companion_entry statusline_mod.py)"
+for mod in "$SCRIPT_DIR"/hooks/*_mod.py; do
+    entry_name="$(companion_entry "$(basename "$mod")")"
+    assert_exists "companion: $entry_name exists for $(basename "$mod")" "$SCRIPT_DIR/hooks/$entry_name"
 done
-assert_eq "discovery: only real skill dir found" "real-skill" "${discovered[*]}"
-assert_eq "discovery: install.sh requires SKILL.md" "1" \
-    "$(grep -cF '[ -f "${d}SKILL.md" ] || continue' "$INSTALL")"
 
 # --- 12. Post-link verification: broken symlink detected ---
 
@@ -429,6 +442,7 @@ assert_contains "guard: skipping mentioned" "$stderr_output" "skipping"
 settings_dir="$tmpdir/settings_fresh"
 settings_repo="$tmpdir/settings_repo"
 mkdir -p "$settings_dir" "$settings_repo"
+mock_installed_hooks "$settings_dir"
 cp "$SCRIPT_DIR/settings.json.reference" "$settings_repo/settings.json.reference"
 
 install_settings "$settings_repo" "$settings_dir"
@@ -441,6 +455,7 @@ assert_file_contains "settings-fresh: has PreToolUse" "$settings_dir/settings.js
 
 settings_merge="$tmpdir/settings_merge"
 mkdir -p "$settings_merge"
+mock_installed_hooks "$settings_merge"
 cat > "$settings_merge/settings.json" <<'EXISTING'
 {
   "cleanupPeriodDays": 7,
@@ -497,6 +512,149 @@ assert_eq "settings-idempotent: format-python count unchanged" "1" "$format_coun
 # User hook still there
 assert_file_contains "settings-idempotent: user hook still present" "$settings_merge/settings.json" "my-custom-linter.sh"
 
+# --- 28a. Settings install: git commit/push deny rules merged into permissions ---
+
+repo_deny_count() {  # FILE RULE -> how many times RULE appears in permissions.deny
+    jq --arg r "$2" '[(.permissions.deny // [])[] | select(. == $r)] | length' "$1"
+}
+# settings_merge had no permissions key at all: both rules added, once each
+assert_eq "settings-deny: commit rule added once" "1" "$(repo_deny_count "$settings_merge/settings.json" "Bash(git commit *)")"
+assert_eq "settings-deny: push rule added once" "1" "$(repo_deny_count "$settings_merge/settings.json" "Bash(git push *)")"
+
+settings_deny="$tmpdir/settings_deny"
+mock_installed_hooks "$settings_deny"
+cat > "$settings_deny/settings.json" <<'DENY'
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "deny": ["Bash(rm -rf *)"]
+  }
+}
+DENY
+install_settings "$settings_repo" "$settings_deny" >/dev/null
+install_settings "$settings_repo" "$settings_deny" >/dev/null
+assert_eq "settings-deny: user rule kept first, repo rules appended once" \
+    '["Bash(rm -rf *)","Bash(git commit *)","Bash(git push *)"]' \
+    "$(jq -c '.permissions.deny' "$settings_deny/settings.json")"
+assert_eq "settings-deny: other permission keys kept" "auto" \
+    "$(jq -r '.permissions.defaultMode' "$settings_deny/settings.json")"
+
+# --- 28b. Settings install: a declined hook is not registered ---
+# A registered-but-missing script exits 2, which Claude Code treats as a
+# blocking error: a declined git-guard.py would deny every Bash call.
+
+settings_declined="$tmpdir/settings_declined"
+mock_installed_hooks "$settings_declined"
+rm "$settings_declined/hooks/git-guard.py"
+install_settings "$settings_repo" "$settings_declined" >/dev/null
+assert_file_not_contains "settings-declined: git-guard not registered" "$settings_declined/settings.json" "git-guard.py"
+assert_eq "settings-declined: sensitive-file-guard keeps all 3 matchers" "3" \
+    "$(grep -c "sensitive-file-guard.py" "$settings_declined/settings.json" || true)"
+assert_eq "settings-declined: Bash matcher survives with one command" "1" \
+    "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]] | length' "$settings_declined/settings.json")"
+assert_file_contains "settings-declined: non-hook keys kept" "$settings_declined/settings.json" "cleanupPeriodDays"
+
+# Installing the hook later and re-merging registers it
+: > "$settings_declined/hooks/git-guard.py"
+install_settings "$settings_repo" "$settings_declined" >/dev/null
+assert_file_contains "settings-declined: registered once installed" "$settings_declined/settings.json" "git-guard.py"
+
+settings_nosl="$tmpdir/settings_nosl"
+mock_installed_hooks "$settings_nosl"
+rm "$settings_nosl/hooks/statusline.py"
+install_settings "$settings_repo" "$settings_nosl" >/dev/null
+assert_eq "settings-declined: no statusLine without statusline.py" "null" \
+    "$(jq '.statusLine' "$settings_nosl/settings.json")"
+# ...and a repo-managed statusLine already present is removed on re-merge
+jq --slurpfile ref "$settings_repo/settings.json.reference" '.statusLine = $ref[0].statusLine' \
+    "$settings_nosl/settings.json" > "$settings_nosl/s.tmp" && mv "$settings_nosl/s.tmp" "$settings_nosl/settings.json"
+install_settings "$settings_repo" "$settings_nosl" >/dev/null
+assert_eq "settings-declined: stale repo statusLine removed" "null" \
+    "$(jq '.statusLine' "$settings_nosl/settings.json")"
+
+settings_nohooks="$tmpdir/settings_nohooks"
+mkdir -p "$settings_nohooks"
+install_settings "$settings_repo" "$settings_nohooks" >/dev/null
+assert_eq "settings-nohooks: no repo hooks registered" "0" \
+    "$(jq '[(.hooks // {}) | .. | .command? // empty] | length' "$settings_nohooks/settings.json")"
+
+# --- 28c. Real entrypoint: re-run with everything installed still merges settings ---
+# install.sh reads answers from /dev/tty, so drive it under a pty (util-linux script).
+
+if script --version 2>/dev/null | grep -q util-linux && command -v jq >/dev/null 2>&1; then
+    e2e_home="$tmpdir/e2e_home"
+    mkdir -p "$e2e_home/.claude"
+    run_installer() {
+        yes '' | head -n 200 | HOME="$e2e_home" script -qec "bash '$INSTALL'" /dev/null
+    }
+    run_installer >/dev/null 2>&1 || true
+    assert_is_symlink "e2e: git-guard.py linked" "$e2e_home/.claude/hooks/git-guard.py"
+    assert_is_symlink "e2e: git_guard_mod.py linked with its entry" "$e2e_home/.claude/hooks/git_guard_mod.py"
+    assert_file_contains "e2e: git-guard registered" "$e2e_home/.claude/settings.json" "git-guard.py"
+    assert_eq "e2e: __init__.py not installed" "absent" \
+        "$([ -e "$e2e_home/.claude/hooks/__init__.py" ] && echo present || echo absent)"
+    assert_eq "e2e: git push deny rule installed" "1" \
+        "$(repo_deny_count "$e2e_home/.claude/settings.json" "Bash(git push *)")"
+
+    # Drop the Grep matcher and one deny rule, as if settings predate them;
+    # everything stays linked
+    jq '.hooks.PreToolUse |= map(select(.matcher != "Grep")) | .permissions.deny -= ["Bash(git push *)"]' \
+        "$e2e_home/.claude/settings.json" > "$e2e_home/s.tmp" && mv "$e2e_home/s.tmp" "$e2e_home/.claude/settings.json"
+    e2e_out=$(run_installer 2>&1 || true)
+    assert_contains "e2e: rerun sees everything installed" "$e2e_out" "All components already installed"
+    assert_eq "e2e: rerun restores the Grep matcher" "1" \
+        "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Grep")] | length' "$e2e_home/.claude/settings.json")"
+    assert_eq "e2e: rerun restores the deleted deny rule once" "1" \
+        "$(repo_deny_count "$e2e_home/.claude/settings.json" "Bash(git push *)")"
+    assert_eq "e2e: rerun keeps the other deny rule once" "1" \
+        "$(repo_deny_count "$e2e_home/.claude/settings.json" "Bash(git commit *)")"
+
+    # A *_mod.py missing beside its installed entry script is relinked, unprompted
+    rm "$e2e_home/.claude/hooks/git_guard_mod.py"
+    e2e_out=$(run_installer 2>&1 || true)
+    assert_is_symlink "e2e: missing mod relinked" "$e2e_home/.claude/hooks/git_guard_mod.py"
+    case "$e2e_out" in
+        *"Install Hook: git_guard_mod.py"*) FAIL=$((FAIL + 1)); printf "FAIL: e2e: mod was prompted for\n" >&2 ;;
+        *) PASS=$((PASS + 1)) ;;
+    esac
+
+    # Declining git-guard.py on a fresh install skips its module and registration.
+    # Answers follow the prompt order: CLAUDE.md, then each prompted hook in the
+    # installer's discovery order ("n" for git-guard.py), then "y" for the rest.
+    e2e_home="$tmpdir/e2e_decline"
+    mkdir -p "$e2e_home/.claude"
+    {
+        printf 'y\n'
+        for f in "$SCRIPT_DIR"/hooks/*.sh "$SCRIPT_DIR"/hooks/*.py; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in
+                *_mod.py | __init__.py) ;;
+                git-guard.py) printf 'n\n' ;;
+                *) printf 'y\n' ;;
+            esac
+        done
+        yes y | head -n 200
+    } | HOME="$e2e_home" script -qec "bash '$INSTALL'" /dev/null >/dev/null 2>&1 || true
+    assert_is_symlink "e2e-decline: other hooks linked" "$e2e_home/.claude/hooks/sensitive-file-guard.py"
+    assert_eq "e2e-decline: git-guard.py not linked" "absent" \
+        "$([ -e "$e2e_home/.claude/hooks/git-guard.py" ] && echo present || echo absent)"
+    assert_eq "e2e-decline: git_guard_mod.py not linked" "absent" \
+        "$([ -e "$e2e_home/.claude/hooks/git_guard_mod.py" ] && echo present || echo absent)"
+    assert_file_not_contains "e2e-decline: git-guard not registered" "$e2e_home/.claude/settings.json" "git-guard.py"
+    assert_eq "e2e-decline: deny rules still installed (documented)" "1" \
+        "$(repo_deny_count "$e2e_home/.claude/settings.json" "Bash(git commit *)")"
+
+    # Real uninstall.sh entrypoint on that install, accepting every default
+    yes '' | head -n 200 | HOME="$e2e_home" script -qec "bash '$UNINSTALL'" /dev/null >/dev/null 2>&1 || true
+    assert_eq "e2e-uninstall: hook symlinks removed" "absent" \
+        "$([ -e "$e2e_home/.claude/hooks/sensitive-file-guard.py" ] && echo present || echo absent)"
+    assert_file_not_contains "e2e-uninstall: hook registrations removed" "$e2e_home/.claude/settings.json" "/.claude/hooks/"
+    assert_eq "e2e-uninstall: deny rules removed" "0" \
+        "$(( $(repo_deny_count "$e2e_home/.claude/settings.json" "Bash(git commit *)") + $(repo_deny_count "$e2e_home/.claude/settings.json" "Bash(git push *)") ))"
+else
+    printf "SKIP: e2e installer tests need util-linux script and jq\n" >&2
+fi
+
 # --- 29. Settings uninstall: hook entries removed, user keys preserved ---
 
 settings_uninstall="$tmpdir/settings_uninstall"
@@ -520,6 +678,31 @@ assert_file_contains "settings-uninstall: enabledPlugins preserved" "$settings_u
 assert_file_contains "settings-uninstall: user hook preserved" "$settings_uninstall/settings.json" "my-custom-linter.sh"
 # Backup created
 assert_exists "settings-uninstall: backup created" "$settings_uninstall/settings.json.bak"
+# Repo deny rules removed (settings were merged from the real reference)
+assert_eq "settings-uninstall: repo deny rules removed" "0" \
+    "$(jq '(.permissions.deny // []) | length' "$settings_uninstall/settings.json")"
+
+# --- 29a. Settings uninstall: only deny rules left (detection must still fire) ---
+
+settings_denyonly="$tmpdir/settings_denyonly"
+mkdir -p "$settings_denyonly"
+jq '{permissions: {deny: (["Bash(rm -rf *)"] + .permissions.deny)}}' \
+    "$SCRIPT_DIR/settings.json.reference" > "$settings_denyonly/settings.json"
+uninstall_settings "$settings_denyonly/settings.json" >/dev/null
+assert_eq "settings-uninstall-denyonly: only the user rule remains" '["Bash(rm -rf *)"]' \
+    "$(jq -c '.permissions.deny' "$settings_denyonly/settings.json")"
+
+# --- 29b. Settings uninstall: no permissions key (must not abort or create one) ---
+
+settings_noperm="$tmpdir/settings_noperm"
+mkdir -p "$settings_noperm"
+jq 'del(.permissions)' "$settings_merge/settings.json" > "$settings_noperm/settings.json"
+rc=0
+uninstall_settings "$settings_noperm/settings.json" >/dev/null || rc=$?
+assert_eq "settings-uninstall-noperm: completes" "0" "$rc"
+assert_eq "settings-uninstall-noperm: valid JSON, no permissions created" "null" \
+    "$(jq '.permissions' "$settings_noperm/settings.json")"
+assert_file_not_contains "settings-uninstall-noperm: hooks still cleaned" "$settings_noperm/settings.json" "git-guard.py"
 
 # --- 30. Settings install: jq not available (graceful skip) ---
 
@@ -547,6 +730,9 @@ mkdir -p "$settings_nomatch"
 cat > "$settings_nomatch/settings.json" <<'NOMATCH'
 {
   "cleanupPeriodDays": 5,
+  "permissions": {
+    "deny": ["Bash(rm -rf *)"]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -573,6 +759,7 @@ assert_not_exists "settings-uninstall-nomatch: no backup created" "$settings_nom
 
 settings_sl="$tmpdir/settings_sl"
 mkdir -p "$settings_sl"
+mock_installed_hooks "$settings_sl"
 cat > "$settings_sl/settings.json" <<'SL'
 {
   "statusLine": {
@@ -589,6 +776,7 @@ assert_file_contains "settings-sl: custom statusLine preserved" "$settings_sl/se
 
 settings_dedup="$tmpdir/settings_dedup"
 mkdir -p "$settings_dedup"
+mock_installed_hooks "$settings_dedup"
 # Simulate a settings.json with duplicate hook entries (as an older installer might create)
 cat > "$settings_dedup/settings.json" <<'DEDUP'
 {
@@ -678,6 +866,7 @@ assert_file_contains "settings-dedup: user hook preserved" "$settings_dedup/sett
 
 settings_upgrade="$tmpdir/settings_upgrade"
 mkdir -p "$settings_upgrade"
+mock_installed_hooks "$settings_upgrade"
 # Simulate settings.json with an old-style hook command that was changed in the reference
 cat > "$settings_upgrade/settings.json" <<'UPGRADE'
 {
@@ -730,6 +919,7 @@ assert_file_contains "settings-upgrade: format-python added" "$settings_upgrade/
 
 settings_cmd_change="$tmpdir/settings_cmd_change"
 mkdir -p "$settings_cmd_change"
+mock_installed_hooks "$settings_cmd_change"
 # Old format without python3 prefix
 cat > "$settings_cmd_change/settings.json" <<'CMDCHANGE'
 {

@@ -115,12 +115,49 @@ install_claude_md_import() {
 merge_settings_json() {
     local settings_file="$1"
     local reference_file="$2"
+    local hooks_dir="${3:-}"
+    local drop_sl=false
 
-    local ref_hooks ref_sl
+    local ref_hooks ref_sl ref_deny
     ref_hooks=$(jq '.hooks // {}' "$reference_file")
     ref_sl=$(jq '.statusLine // null' "$reference_file")
+    ref_deny=$(jq '.permissions.deny // []' "$reference_file")
 
-    jq --argjson ref_hooks "$ref_hooks" --argjson ref_sl "$ref_sl" '
+    # With a hooks dir, register only hooks whose script is installed there: a
+    # registered but missing script exits 2, which Claude Code treats as a
+    # blocking error (a declined git-guard.py would deny every Bash call).
+    if [ -n "$hooks_dir" ]; then
+        local installed f
+        installed=$(for f in "$hooks_dir"/*; do
+            [ -e "$f" ] && basename "$f"
+        done | jq -R . | jq -s .)
+        ref_hooks=$(printf '%s' "$ref_hooks" | jq --argjson installed "$installed" '
+            map_values(
+                map(.hooks |= map(select(
+                    ([(.command // "" | tostring) | capture("/\\.claude/hooks/(?<s>[^ \"]+)")][0].s) as $s
+                    | $s == null or any($installed[]; . == $s)
+                )))
+                | map(select(.hooks | length > 0))
+            )
+            | with_entries(select(.value | length > 0))
+        ')
+        # Same rule for the status line (a missing script just blanks it)
+        [ -e "$hooks_dir/statusline.py" ] || drop_sl=true
+    fi
+
+    jq --argjson ref_hooks "$ref_hooks" --argjson ref_sl "$ref_sl" --argjson drop_sl "$drop_sl" \
+        --argjson ref_deny "$ref_deny" '
+        # permissions / permissions.deny absent, null, or the right type. Raw type
+        # checks with if/elif: in `a or b`, b still runs when a is false, so
+        # .permissions.deny would error on a string .permissions; and "//" lets
+        # false through.
+        def deny_mergeable:
+            (.permissions | type) as $t
+            | if $t == "null" then true
+              elif $t == "object" then ((.permissions.deny | type) as $d | $d == "null" or $d == "array")
+              else false
+              end;
+
         # Step 1: Strip existing repo-managed hook entries (/.claude/hooks/)
         # so stale entries from older versions are removed before re-adding.
         # User hooks (commands not referencing /.claude/hooks/) are preserved.
@@ -152,8 +189,26 @@ merge_settings_json() {
             )
         ) | from_entries) |
 
-        # Step 4: Update statusLine to match reference (replace if repo-managed, set if absent)
-        if $ref_sl != null then
+        # Step 4: Append the reference deny rules that are missing (git commit/push,
+        # layered under git-guard). Existing entries and their order are untouched;
+        # a malformed permissions/deny skips only this step.
+        if deny_mergeable then
+            ($ref_deny - (.permissions.deny // [])) as $missing
+            | if ($missing | length) > 0
+              then .permissions.deny = ((.permissions.deny // []) + $missing)
+              else .
+              end
+        else .
+        end |
+
+        # Step 5: Update statusLine to match reference (replace if repo-managed, set if absent).
+        # With statusline.py not installed, remove a repo-managed statusLine instead.
+        if $drop_sl then
+            if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then
+                del(.statusLine)
+            else .
+            end
+        elif $ref_sl != null then
             if (.statusLine // null) == null then
                 .statusLine = $ref_sl
             elif (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then
@@ -181,7 +236,7 @@ install_settings_needed() {
 
     # Compare current vs merged
     local merged existing
-    merged=$(merge_settings_json "$settings_file" "$reference_file")
+    merged=$(merge_settings_json "$settings_file" "$reference_file" "$claude_dir/hooks")
     existing=$(jq '.' "$settings_file")
     [ "$existing" != "$merged" ]
 }
@@ -202,30 +257,57 @@ install_settings() {
         return 0
     fi
 
-    # Fresh install: just copy the reference file
+    # Fresh install: start from the reference file, then fall through so the
+    # merge drops registrations for hooks that aren't installed.
+    local fresh=0
     if [ ! -f "$settings_file" ]; then
         mkdir -p "$claude_dir"
         cp "$reference_file" "$settings_file"
         printf "  settings.json: copied from reference (fresh install)\n"
-        return 0
+        fresh=1
     fi
 
-    # Merge hooks and statusLine from reference into existing settings
+    # Merge hooks, statusLine and permission deny rules from reference into existing settings
     local merged
-    merged=$(merge_settings_json "$settings_file" "$reference_file")
+    merged=$(merge_settings_json "$settings_file" "$reference_file" "$claude_dir/hooks")
 
     # Compare before writing — skip if nothing changed
     local existing
     existing=$(jq '.' "$settings_file")
     if [ "$existing" = "$merged" ]; then
-        printf "  settings.json: all hooks already present — skipping\n"
+        [ "$fresh" -eq 1 ] || printf "  settings.json: already up to date — skipping\n"
         return 0
     fi
 
-    cp "$settings_file" "${settings_file}.bak"
-    printf "  settings.json: backed up to settings.json.bak\n"
+    if [ "$fresh" -eq 0 ]; then
+        cp "$settings_file" "${settings_file}.bak"
+        printf "  settings.json: backed up to settings.json.bak\n"
+    fi
     printf '%s\n' "$merged" > "$settings_file"
-    printf "  settings.json: merged hooks and statusLine from reference\n"
+    if [ "$fresh" -eq 1 ]; then
+        printf "  settings.json: dropped registrations for hooks that aren't installed\n"
+    else
+        printf "  settings.json: merged hooks, statusLine and permission rules from reference\n"
+    fi
+}
+
+# discover_skills REPO_DIR: print each installable skill dir, one per line.
+# Skips symlinks and dirs without a SKILL.md (e.g. Claude Code's skills/synced/).
+discover_skills() {
+    local d
+    for d in "$1"/skills/*/; do
+        [ -d "${d%/}" ] || continue
+        [ ! -L "${d%/}" ] || continue
+        [ -f "${d}SKILL.md" ] || continue
+        printf '%s\n' "$d"
+    done
+}
+
+# companion_entry MOD_NAME: the entry script an importable *_mod.py belongs to
+# (git_guard_mod.py -> git-guard.py, statusline_mod.py -> statusline.py).
+companion_entry() {
+    local stem="${1%_mod.py}"
+    printf '%s.py\n' "${stem//_/-}"
 }
 
 # --source-only: allow tests to source this file for the guard functions
@@ -250,22 +332,21 @@ check_overlap "$REPO_DIR" "$CLAUDE_DIR" || exit 1
 # glob below (no special-case entry needed).
 declare -a COMPONENTS=()
 
-# Discover hooks (skip symlinks)
+# Discover hooks (skip symlinks, and __init__.py, which only makes hooks/ an
+# importable package for the test suite)
 for f in "$REPO_DIR"/hooks/*.sh "$REPO_DIR"/hooks/*.py; do
     [ -f "$f" ] || continue
     [ ! -L "$f" ] || continue
     name=$(basename "$f")
+    [ "$name" != "__init__.py" ] || continue
     COMPONENTS+=("Hook: $name|$f|$CLAUDE_DIR/hooks/$name")
 done
 
-# Discover skills (skip symlinks and dirs without a SKILL.md, e.g. skills/synced/)
-for d in "$REPO_DIR"/skills/*/; do
-    [ -d "${d%/}" ] || continue
-    [ ! -L "${d%/}" ] || continue
-    [ -f "${d}SKILL.md" ] || continue
+# Discover skills
+while IFS= read -r d; do
     name=$(basename "$d")
     COMPONENTS+=("Skill: $name|$d|$CLAUDE_DIR/skills/$name")
-done
+done < <(discover_skills "$REPO_DIR")
 
 # Discover rules (skip symlinks)
 for f in "$REPO_DIR"/rules/*.md; do
@@ -301,6 +382,7 @@ else
 fi
 
 selected=()
+deferred_mods=()
 already_installed=0
 for entry in "${COMPONENTS[@]}"; do
     IFS='|' read -r label source target <<< "$entry"
@@ -317,6 +399,12 @@ for entry in "${COMPONENTS[@]}"; do
         fi
     fi
 
+    # A *_mod.py is useless without its entry script (and vice versa), so it is
+    # never prompted for; it follows its entry script below.
+    case "$label" in
+        "Hook: "*_mod.py) deferred_mods+=("$entry"); continue ;;
+    esac
+
     printf "  Install %s? [Y/n] " "$label"
     read -r answer </dev/tty
     case "$answer" in
@@ -325,34 +413,46 @@ for entry in "${COMPONENTS[@]}"; do
     esac
 done
 
+# ${arr[@]+"${arr[@]}"}: bash < 4.4 (macOS /bin/bash 3.2) treats an empty
+# "${arr[@]}" as unbound under set -u, and these arrays are empty on a re-run.
+for entry in ${deferred_mods[@]+"${deferred_mods[@]}"}; do
+    IFS='|' read -r label source target <<< "$entry"
+    entry_target="$CLAUDE_DIR/hooks/$(companion_entry "$(basename "$source")")"
+    if [ -e "$entry_target" ] || printf '%s\n' ${selected[@]+"${selected[@]}"} | grep -qF "|$entry_target"; then
+        selected+=("$entry")
+    fi
+done
+
 if [ ${#selected[@]} -eq 0 ]; then
     if [ "$already_installed" -eq "${#COMPONENTS[@]}" ]; then
         printf "\nAll components already installed.\n"
     else
-        printf "\nNothing selected. Exiting.\n"
+        printf "\nNothing new selected.\n"
     fi
-    exit 0
+else
+    printf "\nThe following will be installed:\n"
+    for entry in "${selected[@]}"; do
+        label="${entry%%|*}"
+        printf "  - %s\n" "$label"
+    done
+
+    printf "\nExisting files at target paths will be backed up with a .bak suffix.\n"
+    printf "Proceed? [Y/n] "
+    read -r confirm </dev/tty
+    case "$confirm" in
+        [nN]*) printf "Aborted.\n"; exit 0 ;;
+    esac
 fi
-
-printf "\nThe following will be installed:\n"
-for entry in "${selected[@]}"; do
-    label="${entry%%|*}"
-    printf "  - %s\n" "$label"
-done
-
-printf "\nExisting files at target paths will be backed up with a .bak suffix.\n"
-printf "Proceed? [Y/n] "
-read -r confirm </dev/tty
-case "$confirm" in
-    [nN]*) printf "Aborted.\n"; exit 0 ;;
-esac
+# No early exit when nothing is new: stale-link cleanup and the settings.json
+# merge below must still run, or a release that only changes hook
+# registrations never reaches an existing install.
 
 # ---------------------------------------------------------------------------
 # Symlink creation
 # ---------------------------------------------------------------------------
 
 printf "\n"
-for entry in "${selected[@]}"; do
+for entry in ${selected[@]+"${selected[@]}"}; do
     IFS='|' read -r label source target <<< "$entry"
 
     # Source == target guard (e.g., running from inside ~/.claude)
@@ -448,17 +548,17 @@ elif [ ${#stale_links[@]} -gt 0 ]; then
 fi
 
 printf "\n"
-# install_settings detects no-ops internally and prints "already present — skipping".
+# install_settings detects no-ops internally and prints "already up to date — skipping".
 # Only prompt the user when there's actually something to merge.
 if [ -t 0 ] && install_settings_needed "$REPO_DIR" "$CLAUDE_DIR"; then
-    printf "  Update ~/.claude/settings.json with hook registrations? [Y/n] "
+    printf "  Update ~/.claude/settings.json (hooks, statusLine, permission rules)? [Y/n] "
     read -r answer </dev/tty
     case "$answer" in
         [nN]*) ;;
         *) install_settings "$REPO_DIR" "$CLAUDE_DIR" ;;
     esac
 elif [ -t 0 ]; then
-    printf "  settings.json: all hooks already present — skipping\n"
+    printf "  settings.json: already up to date — skipping\n"
 else
     install_settings "$REPO_DIR" "$CLAUDE_DIR"
 fi

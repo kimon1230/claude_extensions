@@ -54,6 +54,30 @@ uninstall_claude_md_import() {
     printf "  Removed @import from CLAUDE.md\n"
 }
 
+# Deny rules install.sh merges from settings.json.reference (kept in sync by
+# tests/test_install.sh, which uninstalls from settings built off the reference).
+REPO_DENY_RULES='["Bash(git commit *)","Bash(git push *)"]'
+
+# jq: true when .permissions.deny is an array we can edit. Raw type checks with
+# if/elif: in `a or b`, b still runs when a is false, so .permissions.deny would
+# error on a string .permissions; and "//" lets false through.
+DENY_IS_LIST='def deny_is_list:
+    if (.permissions | type) == "object" then (.permissions.deny | type) == "array" else false end;'
+
+# settings_has_repo_entries FILE: succeeds when FILE holds repo-managed hooks, a
+# repo statusLine, or the repo deny rules. Fails, without erroring, when the file
+# or jq is missing or a check can't parse the file.
+settings_has_repo_entries() {
+    local settings_file="$1" has_hooks has_statusline has_deny
+    { [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; } || return 1
+    has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
+    has_statusline=$(jq 'if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
+    has_deny=$(jq --argjson repo "$REPO_DENY_RULES" "$DENY_IS_LIST"'
+        if deny_is_list then [.permissions.deny[] | select(. as $r | any($repo[]; . == $r))] | length else 0 end
+    ' "$settings_file" 2>/dev/null || echo "0")
+    [ "$has_hooks" != "0" ] || [ "$has_statusline" != "0" ] || [ "$has_deny" != "0" ]
+}
+
 uninstall_settings() {
     local settings_file="$1"
 
@@ -67,20 +91,16 @@ uninstall_settings() {
     fi
 
     # Check if there's anything to remove
-    local has_hooks has_statusline
-    has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
-    has_statusline=$(jq 'if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
-
-    if [ "$has_hooks" = "0" ] && [ "$has_statusline" = "0" ]; then
-        return 0
-    fi
+    settings_has_repo_entries "$settings_file" || return 0
 
     # Backup before modifying
     cp "$settings_file" "${settings_file}.bak"
     printf "  settings.json: backed up to settings.json.bak\n"
 
     local cleaned
-    cleaned=$(jq '
+    cleaned=$(jq --argjson repo "$REPO_DENY_RULES" "$DENY_IS_LIST"'
+        # Remove the repo deny rules (never creates permissions/deny)
+        if deny_is_list then .permissions.deny -= $repo else . end |
         # Remove hook entries whose command contains $HOME/.claude/hooks/
         .hooks = ((.hooks // {}) | to_entries | map(
             .value = [.value[] | select(
@@ -94,7 +114,7 @@ uninstall_settings() {
     ' "$settings_file")
 
     printf '%s\n' "$cleaned" > "$settings_file"
-    printf "  settings.json: removed claude-extensions hook and statusLine entries\n"
+    printf "  settings.json: removed claude-extensions settings entries\n"
 }
 
 # --source-only: allow tests to source for guard functions without executing main
@@ -224,11 +244,8 @@ main() {
     # Clean up settings.json
     local settings_file="$CLAUDE_DIR/settings.json"
     if [ -t 0 ]; then
-        local has_hooks has_statusline
-        has_hooks=$(jq '[.hooks // {} | to_entries[].value[] | select(.hooks[]?.command | tostring | contains("/.claude/hooks/"))] | length' "$settings_file" 2>/dev/null || echo "0")
-        has_statusline=$(jq 'if (.statusLine.command // "" | (contains(".claude/statusline-command.sh") or contains(".claude/hooks/statusline.py"))) then 1 else 0 end' "$settings_file" 2>/dev/null || echo "0")
-        if [ "$has_hooks" != "0" ] || [ "$has_statusline" != "0" ]; then
-            printf "\n  Remove hook/statusline entries from settings.json? [Y/n] "
+        if settings_has_repo_entries "$settings_file"; then
+            printf "\n  Remove claude-extensions entries (hooks, statusLine, permission rules) from settings.json? [Y/n] "
             read -r answer </dev/tty
             case "$answer" in
                 [nN]*) ;;

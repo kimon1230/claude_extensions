@@ -1,10 +1,11 @@
 """Importable logic for statusline.py (hyphenated entry name can't be imported).
 
 Renders a Claude Code status line mirroring a bash PS1:
-``[wt:<name>] user@host:cwd (model) [ctx-bar %] ~$cost``.
+``[wt:<name>] user@host:cwd (model[EXT] effort) [ctx-bar %] ~$cost 5h:N% 7d:N% PR#n state``.
 
-Ports ``statusline-command.sh``. The rendering is a pure function so it can be
-unit-tested without a subprocess; ``main()`` wires stdin/stdout around it.
+Ports ``statusline-command.sh``. The rendering is a function of its input (plus
+the user@host lookup) so it can be unit-tested without a subprocess; ``main()``
+wires stdin/stdout around it.
 
 Must NEVER crash — silent on all errors, mirroring the other hook modules.
 """
@@ -13,17 +14,19 @@ from __future__ import annotations
 
 import getpass
 import json
+import math
 import os
 import socket
 import sys
+import time
 from typing import Any
 
 # ANSI color codes — same palette as the bash PS1 this ports.
 _BOLD_GREEN = "\033[01;32m"  # user@host
 _BOLD_BLUE = "\033[01;34m"  # cwd
-_BOLD_YELLOW = "\033[01;33m"  # model label
-_BOLD_RED = "\033[01;31m"  # context: critical
-_DIM_WHITE = "\033[2;37m"  # cost
+_BOLD_YELLOW = "\033[01;33m"  # model label; warning / pending
+_BOLD_RED = "\033[01;31m"  # critical / changes requested
+_DIM_WHITE = "\033[2;37m"  # cost; healthy rate limits / draft
 _RESET = "\033[00m"
 
 # Context-window thresholds (evaluated against *remaining* percentage). Shifted
@@ -85,8 +88,13 @@ def _short_cwd(cwd: str) -> str:
     """
     if not cwd:
         return cwd
-    home = os.path.expanduser("~")
-    if home and os.path.normcase(cwd).startswith(os.path.normcase(home)):
+    home = os.path.expanduser("~").rstrip("/\\")
+    if not home:
+        return cwd
+    norm_cwd, norm_home = os.path.normcase(cwd), os.path.normcase(home)
+    # Match only at a path boundary, so /home/kim2 is not shown as ~2
+    boundary = norm_cwd[len(norm_home) : len(norm_home) + 1]
+    if norm_cwd.startswith(norm_home) and boundary in ("", "/", "\\"):
         return "~" + cwd[len(home) :]
     return cwd
 
@@ -135,7 +143,7 @@ def _ctx_part(data: dict[str, Any]) -> str:
         return ""
     try:
         used = int(float(used_raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: JSON 1e999
         return ""
 
     remaining = 100 - used
@@ -166,17 +174,54 @@ def _cost_part(data: dict[str, Any]) -> str:
     return f" {_DIM_WHITE}~${cost_check}{_RESET}"
 
 
-def _ratelimit_part(data: dict[str, Any]) -> str:
+def _countdown(seconds: float) -> str:
+    """Format a positive span as ``45m``, ``2h13m`` or ``3d4h``.
+
+    Floored to whole minutes (at least ``1m``); both units always print once the
+    span reaches an hour, so an exact hour is ``1h0m`` and an exact day ``1d0h``.
+    """
+    minutes = max(1, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, mins = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h{mins}m"
+    days, hrs = divmod(hours, 24)
+    return f"{days}d{hrs}h"
+
+
+def _reset_suffix(resets_at: Any, now: float) -> str:
+    """Return ``→<countdown>`` until *resets_at* (Unix epoch seconds), else ``""``.
+
+    Absent, non-numeric (bool included), non-finite and past values give ``""``.
+    """
+    if isinstance(resets_at, bool) or not isinstance(resets_at, (int, float)):
+        return ""
+    try:
+        remaining = float(resets_at) - now
+    except OverflowError:  # an int too large for a float
+        return ""
+    if not math.isfinite(remaining) or remaining <= 0:
+        return ""
+    return f"→{_countdown(remaining)}"
+
+
+def _ratelimit_part(data: dict[str, Any], now: float | None = None) -> str:
     """Build the `` 5h:N% 7d:N%`` subscription rate-limit segment, or ``""``.
 
     Reads ``rate_limits.{five_hour,seven_day}.used_percentage`` — present only
     for Claude.ai (Pro/Max) sessions after the first API response, and each
     window may be independently absent. Each window is colored by its own usage:
-    dim when healthy, yellow past the warning threshold, red past critical.
+    dim when healthy, yellow at or above the warning threshold, red at or above
+    critical. A window at or above the warning threshold also shows when it
+    resets, from its ``resets_at``: ``5h:92%→2h13m``. *now* (epoch seconds)
+    defaults to the current time.
     """
     rate_limits = _nested(data, "rate_limits")
     if not isinstance(rate_limits, dict):
         return ""
+    if now is None:
+        now = time.time()
 
     segments: list[str] = []
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
@@ -185,15 +230,18 @@ def _ratelimit_part(data: dict[str, Any]) -> str:
             continue
         try:
             pct = int(float(pct_raw))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: JSON 1e999
             continue
+        suffix = ""
         if pct >= _RL_CRITICAL:
             color = _BOLD_RED
         elif pct >= _RL_WARNING:
             color = _BOLD_YELLOW
         else:
             color = _DIM_WHITE
-        segments.append(f"{color}{label}:{pct}%{_RESET}")
+        if pct >= _RL_WARNING:
+            suffix = _reset_suffix(_nested(rate_limits, key, "resets_at"), now)
+        segments.append(f"{color}{label}:{pct}%{suffix}{_RESET}")
 
     if not segments:
         return ""
@@ -240,8 +288,10 @@ def _worktree_part(data: dict[str, Any]) -> str:
 def render(data: dict[str, Any]) -> str:
     """Render the full status line from a parsed input dict.
 
-    Pure and total: every optional segment is built defensively, so a missing or
+    Total: every optional segment is built defensively, so a missing or
     malformed field skips only its own segment rather than aborting the line.
+    Depends only on *data* apart from the user@host lookup and the clock read
+    for rate-limit reset countdowns.
     """
     cwd = _nested(data, "workspace", "current_dir")
     if cwd is None:

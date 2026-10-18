@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -299,6 +300,12 @@ class TestBashToolBlocking:
         payload = _make_payload("Bash", {"command": "head -n 5 server.pem"})
         _blocked_reason(_run_main(payload, monkeypatch))
 
+    @pytest.mark.parametrize("command", ["cat \\\n.env", "cat \\\n  .env", "cat .e\\\nnv"])
+    def test_line_continuation_blocked(self, command: str, monkeypatch) -> None:
+        """bash deletes backslash-newline; the guard must see the joined token."""
+        reason = _blocked_reason(_run_main(_make_payload("Bash", {"command": command}), monkeypatch))
+        assert ".env" in reason
+
 
 class TestBashToolAllowed:
     """Bash tool payloads that should pass through."""
@@ -367,6 +374,14 @@ class TestGrepToolBlocking:
         payload = _make_payload("Grep", {"pattern": "key", "path": "/home/user/.aws/credentials"})
         _blocked_reason(_run_main(payload, monkeypatch))
 
+    @pytest.mark.parametrize(
+        "path",
+        ["/home/user/.aws", "/home/user/.ssh/", "~/.ssh", "C:\\Users\\u\\.aws", "/home/u/.ssh/config"],
+    )
+    def test_grep_secret_dir_path_blocked(self, path: str, monkeypatch) -> None:
+        payload = _make_payload("Grep", {"pattern": "x", "path": path, "output_mode": "content"})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
 
 class TestGrepGlobWildcardBlocking:
     """Glob-aware matching: wildcarded forms of sensitive patterns must block.
@@ -387,10 +402,30 @@ class TestGrepGlobWildcardBlocking:
             "credential*",
             "credentials*",
             "**/.aws/*",
+            "**/.aws/conf*",
+            ".ssh/*",
             "id_*",
             "*.pem",
             "*.p*",
             ".npmrc*",
+            # brace alternation (ripgrep syntax; fnmatch can't expand it)
+            "*.{pem,p12}",
+            "**/*.{pem,p12}",
+            "*.{crt,pem}",
+            "{.env,README}*",
+            # wildcard-only but NOT catch-alls: they still select .env / x.pem
+            ".*",
+            "**/.*",
+            "*.???",
+            # env globs without the literal ".env" text
+            ".e*",
+            ".en?",
+            "?env",
+            ".e*.local",
+            "?env.*",
+            ".en?.production",
+            "*v.local",
+            "*env.local",
         ],
     )
     def test_sensitive_glob_blocked(self, glob: str, monkeypatch) -> None:
@@ -416,6 +451,7 @@ class TestGrepGlobNoOverBlock:
             "tls.*",
             "ssl.*",
             "*.local",  # collides only with the .env.local suffix
+            "?*.local",
             "*.test",
             "*.production",
             "*.key",  # bare *.key is allowed for Read too (keyword-gated)
@@ -425,6 +461,55 @@ class TestGrepGlobNoOverBlock:
         payload = _make_payload("Grep", {"pattern": "X", "glob": glob, "output_mode": "content"})
         out = _run_main(payload, monkeypatch)
         assert out == ""
+
+    @pytest.mark.parametrize(
+        "glob",
+        ["*", "**", "**/*", "*.*", "src/**", "config/*", "tests/**/*", "*.{ts,tsx}", "**/*.{js,py}"],
+    )
+    def test_catch_all_glob_allowed(self, glob: str, monkeypatch) -> None:
+        """A file pattern with no distinctive token is unclassifiable, like no glob
+        at all (which is allowed); blocking it would deny routine searches."""
+        payload = _make_payload("Grep", {"pattern": "X", "glob": glob, "output_mode": "content"})
+        assert _run_main(payload, monkeypatch) == ""
+
+
+class TestExpandBraces:
+    """Brace alternation expansion for Grep globs."""
+
+    def test_no_braces(self) -> None:
+        assert sensitive_file_guard_mod._expand_braces("*.py") == ["*.py"]
+
+    def test_single_group(self) -> None:
+        assert sorted(sensitive_file_guard_mod._expand_braces("*.{pem,p12}")) == ["*.p12", "*.pem"]
+
+    def test_nested_groups(self) -> None:
+        got = sorted(sensitive_file_guard_mod._expand_braces("{a,b{c,d}}.x"))
+        assert got == ["a.x", "bc.x", "bd.x"]
+
+    @pytest.mark.parametrize(
+        "glob",
+        [
+            "{a,b}" * 20,  # deep: 2**20 alternatives
+            "*.{" + ",".join(f"x{i}" for i in range(1000)) + "}",  # wide: one group
+        ],
+    )
+    def test_expansion_over_cap_returns_none(self, glob: str) -> None:
+        """Huge expansions must not be enumerated (the hook has a 5s timeout)."""
+        assert sensitive_file_guard_mod._expand_braces(glob) is None
+
+    def test_over_long_glob_denied(self, monkeypatch) -> None:
+        """Classification cost grows with length; an over-long glob fails closed
+        rather than running past the hook's 5s fail-open timeout."""
+        glob = "x" * (sensitive_file_guard_mod._MAX_GLOB_LEN + 1)
+        payload = _make_payload("Grep", {"pattern": "x", "glob": glob})
+        _blocked_reason(_run_main(payload, monkeypatch))
+
+    def test_over_cap_glob_denied(self, monkeypatch) -> None:
+        """Hitting the cap must fail closed: leftover alternatives can't be checked.
+        Every alternative is benign, so only the fail-closed branch can deny."""
+        many = ",".join(f"a{i}" for i in range(70))
+        payload = _make_payload("Grep", {"pattern": "x", "glob": "{" + many + "}.txt"})
+        _blocked_reason(_run_main(payload, monkeypatch))
 
 
 class TestGrepToolAllowed:
@@ -484,6 +569,32 @@ class TestOtherToolsIgnored:
         payload = _make_payload("CustomTool", {"file_path": ".env"})
         out = _run_main(payload, monkeypatch)
         assert out == ""
+
+
+class TestEntryScript:
+    """Run the real entry script the way settings.json does (separate process)."""
+
+    _SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "sensitive-file-guard.py"
+
+    def _run(self, payload: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self._SCRIPT)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_denies_sensitive_grep(self) -> None:
+        proc = self._run(_make_payload("Grep", {"pattern": "x", "glob": "*.{pem,p12}"}))
+        assert proc.returncode == 0
+        _blocked_reason(proc.stdout)
+
+    def test_allows_normal_read(self) -> None:
+        proc = self._run(_make_payload("Read", {"file_path": "/proj/README.md"}))
+        assert proc.returncode == 0
+        assert proc.stdout == ""
+        assert proc.stderr == ""
 
 
 class TestMainEdgeCases:

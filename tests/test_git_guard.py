@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -102,6 +103,16 @@ class TestCommandHitsGitBlocked:
             ("(git push)", "push"),
             ("git status; git push", "push"),
             ("a;git push", "push"),
+            # unspaced redirects
+            ("git push>/dev/null", "push"),
+            ("git commit>log 2>&1", "commit"),
+            ("git push</dev/null", "push"),
+            # backslash-newline continuations (bash deletes them)
+            ("git -C /repo \\\n  push origin main", "push"),
+            ("git \\\ncommit -m x", "commit"),
+            ("git pu\\\nsh", "push"),
+            # fast path must not miss case variants of the launcher
+            ("GIT push", "push"),
         ],
     )
     def test_blocked(self, command: str, expected: str) -> None:
@@ -257,6 +268,32 @@ class TestOtherToolsIgnored:
     def test_unknown_tool_ignored(self, monkeypatch) -> None:
         payload = {"tool_name": "CustomTool", "tool_input": {"command": "git push"}}
         assert _run_main(payload, monkeypatch) == ""
+
+
+class TestEntryScript:
+    """Run the real entry script the way settings.json does (separate process)."""
+
+    _SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "git-guard.py"
+
+    def _run(self, command: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self._SCRIPT)],
+            input=json.dumps(_make_payload(command)),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_denies_push(self) -> None:
+        proc = self._run("git push origin main")
+        assert proc.returncode == 0
+        assert "push" in _blocked_reason(proc.stdout)
+
+    def test_allows_status(self) -> None:
+        proc = self._run("git status")
+        assert proc.returncode == 0
+        assert proc.stdout == ""
+        assert proc.stderr == ""
 
 
 class TestMainEdgeCases:

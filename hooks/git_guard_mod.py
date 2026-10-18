@@ -27,8 +27,9 @@ _GIT_OPTS_WITH_ARG: frozenset[str] = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 )
 
-# unspaced shell operators shlex leaves attached to a token (e.g. "push;echo")
-_SHELL_SPLIT = re.compile(r"[;|&()]")
+# unspaced shell operators and redirects shlex leaves attached to a token
+# (e.g. "push;echo", "push>/dev/null")
+_SHELL_SPLIT = re.compile(r"[;|&()<>]")
 
 
 def _is_git_launcher(token: str) -> bool:
@@ -46,6 +47,13 @@ def _is_git_launcher(token: str) -> bool:
 
 def _command_hits_git(command: str) -> str | None:
     """Return the blocked subcommand ("commit"/"push") in *command*, else None."""
+    # bash deletes backslash-newline continuations; shlex would keep "\n" as its
+    # own token and mistake it for the subcommand ("git \<newline>push").
+    command = command.replace("\\\n", "")
+    if "git" not in command.lower():
+        # Fast path: tokenising a large heredoc costs seconds, and the hook
+        # fails open on its 5s timeout.
+        return None
     try:
         tokens = shlex.split(command)
     except ValueError:
@@ -131,8 +139,8 @@ def main() -> None:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
-                        f"Blocked: git {subcommand} — you handle all git in this "
-                        "repo. Run it yourself outside this session."
+                        f"Blocked: git {subcommand} — the user handles all git "
+                        "commits and pushes. Ask them to run it outside this session."
                     ),
                 }
             }

@@ -65,14 +65,14 @@ All shared code lives in `hooks/lib/` — stdlib only, no external dependencies:
 
 ### Statusline
 
-`statusline_mod.render(data)` is a **pure, total** function: it takes the parsed stdin JSON (see the [statusline input schema](https://code.claude.com/docs/en/statusline)) and returns the line string. `main()` only wires stdin/stdout around it, so segments are unit-tested without a subprocess (`tests/test_statusline.py`). The contract is **never crash, never emit `null`**: each segment is built by its own helper that returns `""` on a missing or malformed field, so one bad field drops only its own segment rather than aborting the line.
+`statusline_mod.render(data)` is a **total** function of its input (apart from the user@host lookup): it takes the parsed stdin JSON (see the [statusline input schema](https://code.claude.com/docs/en/statusline)) and returns the line string. `main()` only wires stdin/stdout around it, so segments are unit-tested without a subprocess (`tests/test_statusline.py`). The contract is **never crash, never emit `null`**: each segment is built by its own helper that returns `""` on a missing or malformed field, so one bad field drops only its own segment rather than aborting the line.
 
 | Segment | Source field(s) | Notes |
 |---------|-----------------|-------|
 | model `(label[EXT] effort)` | `model.display_name`, `exceeds_200k_tokens`, `effort.level` | `Claude ` prefix stripped. `[EXT]` only on a real boolean `True`. `effort.level` (`low`/`medium`/`high`/`xhigh`/`max`) appended verbatim; any other value or an absent field (models without the effort parameter) renders nothing. |
 | context bar | `context_window.used_percentage` | Colored on *remaining* %; thresholds (`_CTX_CRITICAL`/`_CTX_WARNING`) shifted +10 for Claude Code's under-reporting. |
 | cost `~$X.XX` | `cost.total_cost_usd` | Suppressed when it formats to `0.00`. |
-| rate limits `5h:N% 7d:N%` | `rate_limits.{five_hour,seven_day}.used_percentage` | Per-window color (`_RL_WARNING` 75 / `_RL_CRITICAL` 90); each window independently omitted when absent (Claude.ai Pro/Max only, after first API response). |
+| rate limits `5h:N% 7d:N%` | `rate_limits.{five_hour,seven_day}.used_percentage`, `.resets_at` | Per-window color (`_RL_WARNING` 75 / `_RL_CRITICAL` 90); each window independently omitted when absent (Claude.ai Pro/Max only, after first API response). At or above `_RL_WARNING`, a `→2h13m` countdown to `resets_at` (epoch seconds) is appended; `_ratelimit_part` takes an optional `now` so tests don't depend on the clock. |
 | PR `PR#<n> <state>` | `pr.number`, `pr.review_state` | Shown only while an open PR exists. Colored via `_PR_STATE_DISPLAY` (green approved / red changes / yellow pending / dim draft); number renders alone when `review_state` is absent or unrecognized. |
 | worktree `[wt:name]` | `worktree.name` | Truncated to `_WORKTREE_MAX`. |
 
@@ -90,7 +90,11 @@ Session start/compact → session-init.py → increments session_count + re-inje
 
 ### Install mechanism
 
-Skill discovery only offers `skills/*/` directories that contain a `SKILL.md`. That keeps out Claude Code's auto-synced bundle directory (`skills/synced/<bucket>/…`, gitignored), which shows up in the working tree whenever `~/.claude/skills` is a legacy whole-directory symlink into the repo. `tests/test_install.sh` (test 11) pins this.
+Skill discovery (`discover_skills`) only offers `skills/*/` directories that contain a `SKILL.md`. That keeps out Claude Code's auto-synced bundle directory (`skills/synced/<bucket>/…`, gitignored), which shows up in the working tree whenever `~/.claude/skills` is a legacy whole-directory symlink into the repo.
+
+A `hooks/*_mod.py` module is never prompted for: `companion_entry` maps it to its entry script (`git_guard_mod.py` → `git-guard.py`), and it is linked whenever that script is selected or already installed. This keeps the prompts to real choices and `~/.claude/hooks/` consistent. Imports would work either way: Python sets `sys.path[0]` to the entry script's symlink-resolved directory, so `git-guard.py` imports `git_guard_mod` and `lib.*` from the repo's `hooks/`. That is also why `hooks/lib/` needs no link.
+
+`merge_settings_json` takes an optional hooks dir. `install_settings` passes `~/.claude/hooks`, and only hooks whose script exists there get registered. That matters because a registered but missing script exits 2, which Claude Code treats as a blocking error. A declined `git-guard.py` would otherwise deny every Bash call. The interactive flow never exits early when nothing new is selected, so the stale-link cleanup and the settings merge still run. `tests/test_install.sh` covers the declined-hook merge at function level, and test 28c drives the real `install.sh` under a pty (util-linux `script`) with a throwaway `HOME`.
 
 `install.sh` and `uninstall.sh` both support `--source-only` to allow tests to source guard functions without executing the installer:
 
@@ -141,7 +145,7 @@ This strip-then-add approach ensures upgrades cleanly replace stale entries (ren
 | Stop | `run-tests.py` | 120s |
 | SessionEnd | `auto-capture.py` | 10s |
 
-Two guards share the `PreToolUse(Bash)` matcher (both run in parallel; most-restrictive decision wins). `git-guard.py` denies `git commit`/`git push` — enforcing the "user handles all git" rule as a hook rather than a request. It is a guardrail against the *cooperative* model's direct mistakes, not an adversarial control: it tokenizes with `shlex`, flattens unspaced shell operators, and matches the git launcher + a blocked subcommand. Shell-nesting (`bash -c`), command substitution, variable indirection, aliases, and malformed (fail-open) commands are documented accepted residual gaps, not bugs — see `hooks/git_guard_mod.py`.
+Two guards share the `PreToolUse(Bash)` matcher (both run in parallel; most-restrictive decision wins). `git-guard.py` denies `git commit`/`git push` — enforcing the "user handles all git" rule as a hook rather than a request. It is a guardrail against the *cooperative* model's direct mistakes, not an adversarial control: it joins backslash-newline continuations, tokenizes with `shlex`, flattens unspaced shell operators and redirects, and matches the git launcher + a blocked subcommand. It returns early when the command doesn't contain `git` at all, because tokenizing a large heredoc can take seconds and the hook fails open on its 5s timeout. Shell-nesting (`bash -c`), command substitution, variable indirection, aliases, and malformed (fail-open) commands are documented accepted residual gaps, not bugs — see `hooks/git_guard_mod.py`.
 
 ### Subagent model selection in review skills
 

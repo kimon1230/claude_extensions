@@ -78,9 +78,9 @@ Outputs last 50 lines of test output to stderr on failure. Non-blocking (exit 1 
 
 ### `sensitive-file-guard.py` (PreToolUse)
 
-Blocks reads of files matching sensitive patterns before the tool executes. Intercepts the `Read` tool (checks `file_path`), the `Bash` tool (tokenizes command with `shlex.split()`, checks each token), and the `Grep` tool (`Grep` with `output_mode: "content"` can print file contents, so a search aimed at a sensitive file is read-equivalent and blocked regardless of `output_mode`). For Grep, the concrete `path` is matched as a path, while the `glob` is matched *glob-aware* — a pattern like `.env*`, `secret*`, `id_*`, or `**/.aws/*` that could select a sensitive file is blocked, not just a glob that literally equals a sensitive name.
+Blocks reads of files matching sensitive patterns before the tool executes. Intercepts the `Read` tool (checks `file_path`), the `Bash` tool (tokenizes command with `shlex.split()`, checks each token), and the `Grep` tool (`Grep` with `output_mode: "content"` can print file contents, so a search aimed at a sensitive file is read-equivalent and blocked regardless of `output_mode`). For Grep, the concrete `path` is matched as a path (and a path inside `.aws/` or `.ssh/`, including those directories themselves, is blocked). The `glob` is matched *glob-aware*: a pattern like `.env*`, `secret*`, `id_*`, `*.{pem,p12}`, or `**/.aws/*` that could select a sensitive file is blocked, not just a glob that literally equals a sensitive name. A catch-all glob with no distinctive token (`*`, `**/*`, `src/**`, `*.*`) is treated like no glob at all and allowed; dotfile and `?` forms such as `.*` or `*.???`, and env globs that never spell out `.env` (`.e*`, `?env`, `.e*.local`), still select secrets and are blocked. A glob over 256 characters or with more than 64 brace alternatives is denied outright, so a pathological glob can't run the hook past its 5s fail-open timeout.
 
-**Residual gap (by design):** a content-mode Grep scoped only to a *directory* or the cwd with no sensitive `glob` — e.g. `Grep(pattern="AKIA…", output_mode="content")` — cannot be classified by filename and is **not** blocked. This is inherent to any name-based filter; the guard is defense-in-depth, not a complete exfiltration control. The `Read`/`Bash`/concrete-`path` and glob-target cases are the ones it closes.
+**Residual gap (by design):** a content-mode Grep scoped only to a *directory* or the cwd with no sensitive `glob` — e.g. `Grep(pattern="AKIA…", output_mode="content")` — cannot be classified by filename and is **not** blocked. This is inherent to any name-based filter; the guard is defense-in-depth, not a complete exfiltration control. Since that gap already exposes every file a glob could select, the glob check targets the globs a cooperative model naturally writes; deliberately crafted spellings (backslash escapes, odd wildcard fragments) fall under the same gap. The `Read`/`Bash`/concrete-`path` and glob-target cases are the ones it closes.
 
 **Patterns blocked** (matched against basename, case-insensitive):
 - `.env`, `.env.local`, `.env.production`, `.env.staging`, `.env.test`, `.env.development` (but `.env.example`, `.env.sample`, `.envrc` are allowed)
@@ -94,7 +94,12 @@ Denies via the documented PreToolUse contract (`hookSpecificOutput.permissionDec
 
 ### `git-guard.py` (PreToolUse)
 
-Denies `git commit` and `git push` in-session (shares the `Bash` matcher with the sensitive-file guard), enforcing the "user handles all git" rule as a hook rather than a request. It tokenizes the command with `shlex.split()`, flattens unspaced shell operators, and matches the git launcher plus a blocked subcommand — catching the direct forms (`git push`, `cd x && git commit`, `sudo git push`, `git.exe commit`, `git push;echo`). It is a guardrail against accidental commits/pushes, **not** an adversarial control: `bash -c "git push"`, command substitution, variable indirection, and aliases are documented residual gaps. Same deny contract as above; run the command yourself outside the session when you do need it.
+Denies `git commit` and `git push` in-session (shares the `Bash` matcher with the sensitive-file guard), enforcing the "user handles all git" rule as a hook rather than a request. It joins backslash-newline continuations, tokenizes the command with `shlex.split()`, flattens unspaced shell operators and redirects, and matches the git launcher plus a blocked subcommand — catching the direct forms (`git push`, `cd x && git commit`, `sudo git push`, `git.exe commit`, `git push;echo`, `git push>/dev/null`, a `git -C dir \` + newline + `push` continuation). It is a guardrail against accidental commits/pushes, **not** an adversarial control: `bash -c "git push"`, command substitution, variable indirection, and aliases are documented residual gaps. Same deny contract as above; run the command yourself outside the session when you do need it.
+
+**Second layer: native deny rules.** The settings also carry `permissions.deny: ["Bash(git commit *)", "Bash(git push *)"]`. Claude Code applies those to every subcommand, including ones nested in a subshell, a `$(…)` substitution, or a loop body, which are git-guard's gaps. They miss `git -C . push`, `/usr/bin/git push`, and `git 'push'`, which git-guard catches. Neither layer affects your own `!` shell-mode commands.
+- The installer adds the rules whether or not you install `git-guard.py`, appending them to any deny rules you already have.
+- Deleting them from `~/.claude/settings.json` lasts only until the next `install.sh` run, which restores them. To opt out for good, remove them from `settings.json.reference` too.
+- `uninstall.sh` removes them, but only while repo symlinks remain: with none left, it exits before cleaning settings. It matches them by exact string, so an identical rule you added yourself is removed too.
 
 ## Skills
 
@@ -130,7 +135,7 @@ user@host:~/project (Opus 5 high) [████████░░ 80%] ~$1.23 5h
 - Reasoning-effort level after the model name (`effort.level`: `low`/`medium`/`high`/`xhigh`/`max`), reflecting live `/effort` changes. Omitted for models that don't expose the effort parameter.
 - Thresholds shifted +10% to compensate for underreported usage
 - Cost estimate (`~$X.XX`) — the `~` prefix indicates this is an approximate API-equivalent cost, not an actual charge. Claude Code reports `total_cost_usd` even on Pro/Max subscriptions as a usage-equivalent metric. Suppressed when $0.00.
-- Subscription rate-limit windows (`5h:N% 7d:N%`) from `rate_limits.{five_hour,seven_day}.used_percentage` — present only for Claude.ai (Pro/Max) sessions after the first API response. Each window is dim when healthy, yellow past 75%, red past 90%; absent windows are omitted.
+- Subscription rate-limit windows (`5h:N% 7d:N%`) from `rate_limits.{five_hour,seven_day}.used_percentage` — present only for Claude.ai (Pro/Max) sessions after the first API response. Each window is dim when healthy, yellow at 75% or above, red at 90% or above; absent windows are omitted. A window at 75% or above also shows when it resets, from `rate_limits.*.resets_at`: `5h:92%→2h13m`, `7d:81%→3d4h`.
 - Open-PR status (`PR#<n> <state>`) from `pr.number`/`pr.review_state` — shown only while an open PR exists for the current branch. Colored by review state: green `approved`, red `changes` (changes_requested), yellow `pending`, dim `draft`. The number renders alone when the review state is absent.
 
 ## Context Persistence
@@ -164,7 +169,7 @@ Native context compaction (built into Claude Code) summarizes the live conversat
 
 This repo is the canonical source for all Claude Code configuration, installed via `install.sh` (symlink-based, macOS / Linux). Windows users: see [Windows](#windows) below.
 
-The install script adds an `@import` line to your existing `~/.claude/CLAUDE.md` (non-destructive — your customizations are preserved), symlinks other components (hooks, skills, rules, status line) into `~/.claude/`, and auto-merges hook registrations into `~/.claude/settings.json`.
+The install script adds an `@import` line to your existing `~/.claude/CLAUDE.md` (non-destructive — your customizations are preserved), symlinks other components (hooks, skills, rules, status line) into `~/.claude/`, and auto-merges hook registrations and the git deny rules into `~/.claude/settings.json`.
 
 ```bash
 ./install.sh
@@ -177,16 +182,16 @@ You'll be prompted for each component and for settings.json updates. The install
 `install.sh` doubles as an upgrade command. Running it on an existing install will:
 
 - **Skip already-installed components** — symlinks pointing to the correct source are detected and skipped without prompting.
-- **Offer new components** — hooks, skills, or rules added since your last install are prompted for installation.
+- **Offer new components** — hooks, skills, or rules added since your last install are prompted for installation. A hook's importable `*_mod.py` module is never prompted for separately; it is linked whenever its entry script is.
 - **Clean up stale symlinks** — if a component was removed or renamed in the repo, broken symlinks in `~/.claude/` are detected and offered for removal.
-- **Replace stale settings.json entries** — all repo-managed hook entries (commands referencing `/.claude/hooks/`) are stripped and re-added from the current reference. This handles renamed hooks, changed command formats, and removed hooks. User hooks are preserved.
+- **Replace stale settings.json entries** — all repo-managed hook entries (commands referencing `/.claude/hooks/`) are stripped and re-added from the current reference. This handles renamed hooks, changed command formats, and removed hooks. Only hooks whose script is installed in `~/.claude/hooks/` are registered, so declining a hook never leaves a registration pointing at a missing script (Claude Code treats that script's exit code 2 as a blocking error). User hooks are preserved.
 - **Deduplicate settings.json** — duplicate hook entries left by older installer versions are collapsed.
 - **Update repo-managed statusLine** — if the statusLine references our script, it's updated to match the current reference. Custom statusLine configurations are preserved.
 - **Migrate old CLAUDE.md symlinks** — older versions symlinked `CLAUDE.md` directly; running `install.sh` again replaces the symlink with an `@import`, restoring your original content from backup.
 
-When everything is already current, the installer reports "already installed — skipping" for each component and exits without prompting.
+When every component is already installed, the installer reports "already installed — skipping" for each one without prompting, then still runs the stale-link cleanup and the settings.json merge, so a release that only changes hook registrations reaches an existing install.
 
-**Very early installs** symlinked whole directories (`~/.claude/skills` → `<repo>/skills`, same for `hooks/` and `rules/`) instead of the per-component links `install.sh` creates. With that layout, anything Claude Code or another project writes into `~/.claude/skills/` lands in the repo working tree. One example is the auto-synced skill bundle under `skills/synced/`, which is gitignored and skipped by the installer for this reason. Check with `ls -l ~/.claude | grep -- '->'`. To migrate, remove the directory symlinks, re-run `install.sh`, and move any non-repo content (e.g. `skills/synced/`) into the new real `~/.claude/skills/`.
+**Very early installs** symlinked whole directories (`~/.claude/skills` → `<repo>/skills`, same for `hooks/` and `rules/`) instead of the per-component links `install.sh` creates. With that layout, anything Claude Code or another project writes into `~/.claude/skills/` lands in the repo working tree. One example is the auto-synced skill bundle under `skills/synced/`, which is gitignored and skipped by the installer for this reason. Check with `ls -l ~/.claude | grep -- '->'`. To migrate, do it outside a running Claude Code session (its hooks are invoked from `~/.claude/hooks/`): remove the directory symlinks, re-run `install.sh`, and move any non-repo content (e.g. `skills/synced/`) into the new real `~/.claude/skills/`.
 
 ### Updating
 
@@ -194,7 +199,7 @@ Since hooks, skills, and rules are symlinked (not copied), pulling new changes f
 
 ### Uninstalling
 
-Run `./uninstall.sh` — it discovers all symlinks in `~/.claude/` pointing into the repo, removes the `@import` block from `CLAUDE.md`, cleans up hook/statusline entries from `settings.json`, and offers to remove orphaned `.bak` files. Your custom settings and original `CLAUDE.md` content are preserved.
+Run `./uninstall.sh` — it discovers all symlinks in `~/.claude/` pointing into the repo, removes the `@import` block from `CLAUDE.md`, cleans up the repo's hook, statusline, and git deny-rule entries from `settings.json`, and offers to remove orphaned `.bak` files. Your custom settings and original `CLAUDE.md` content are preserved.
 
 ## Windows
 

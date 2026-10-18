@@ -3,7 +3,8 @@
 
 Checks Bash tool command tokens for a direct ``git commit`` / ``git push``
 invocation and prints a JSON deny decision to stdout when one is found. This is a
-cooperative guard (the user handles all git in this repo), not an adversarial one.
+cooperative guard (installed globally: the user handles all git commits and pushes
+in every project), not an adversarial one.
 
 Must NEVER crash — wraps everything in try/except and logs errors to stderr.
 """

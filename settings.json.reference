@@ -5,6 +5,12 @@
     "commit": "",
     "pr": ""
   },
+  "permissions": {
+    "deny": [
+      "Bash(git commit *)",
+      "Bash(git push *)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

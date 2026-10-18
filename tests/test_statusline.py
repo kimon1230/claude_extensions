@@ -397,20 +397,20 @@ def test_effort_combines_with_ext():
 
 
 @pytest.mark.parametrize(
-    "state,text",
+    "state,text,color",
     [
-        ("approved", "approved"),
-        ("changes_requested", "changes"),
-        ("pending", "pending"),
-        ("draft", "draft"),
+        ("approved", "approved", statusline_mod._BOLD_GREEN),
+        ("changes_requested", "changes", statusline_mod._BOLD_RED),
+        ("pending", "pending", statusline_mod._BOLD_YELLOW),
+        ("draft", "draft", statusline_mod._DIM_WHITE),
     ],
 )
-def test_pr_state_shown(state, text):
+def test_pr_state_shown(state, text, color):
     data = {
         "model": {"display_name": "Claude Opus 5"},
         "pr": {"number": 123, "review_state": state},
     }
-    assert f"PR#123 {text}" in statusline_mod.render(data)
+    assert f"{color}PR#123 {text}" in statusline_mod.render(data)
 
 
 def test_pr_no_pr_object_omitted():
@@ -491,7 +491,8 @@ def test_worktree_truncated_to_20_chars():
 
 def test_ctx_color_green_healthy():
     data = {"context_window": {"used_percentage": 10}}  # remaining 90 -> green
-    assert statusline_mod._BOLD_GREEN in statusline_mod.render(data)
+    # Anchored to the bar: user@host is always green, so a bare check proves nothing
+    assert f"{statusline_mod._BOLD_GREEN}[" in statusline_mod.render(data)
 
 
 def test_ctx_color_yellow_warning():
@@ -502,7 +503,23 @@ def test_ctx_color_yellow_warning():
 
 def test_ctx_color_red_critical():
     data = {"context_window": {"used_percentage": 80}}  # remaining 20 -> red
-    assert statusline_mod._BOLD_RED in statusline_mod.render(data)
+    assert f"{statusline_mod._BOLD_RED}[" in statusline_mod.render(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"context_window": {"used_percentage": 1e999}},
+        {"rate_limits": {"five_hour": {"used_percentage": 1e999}}},
+    ],
+)
+def test_infinite_percentage_drops_only_its_segment(data):
+    """JSON 1e999 parses to inf; int(inf) raises OverflowError, which must not
+    take down the whole line."""
+    data = {**data, "model": {"display_name": "Claude Opus 5"}}
+    out = statusline_mod.render(data)
+    assert "(Opus 5)" in out
+    assert "inf" not in out.lower()
 
 
 # --- Added: model prefix stripping and empty-model handling ---
@@ -552,6 +569,20 @@ def test_home_prefix_collapsed_posix(monkeypatch):
     monkeypatch.setattr(statusline_mod.os.path, "expanduser", lambda p: "/home/user")
     data = {"workspace": {"current_dir": "/home/user/project"}}
     assert "~/project" in statusline_mod.render(data)
+
+
+@pytest.mark.parametrize(
+    "cwd,expected",
+    [
+        ("/home/user", "~"),
+        ("/home/user/", "~/"),
+        ("/home/user2/x", "/home/user2/x"),  # sibling dir sharing the prefix
+        ("/home/username", "/home/username"),
+    ],
+)
+def test_home_prefix_only_at_path_boundary(cwd, expected, monkeypatch):
+    monkeypatch.setattr(statusline_mod.os.path, "expanduser", lambda p: "/home/user")
+    assert statusline_mod._short_cwd(cwd) == expected
 
 
 def test_home_prefix_collapsed_windows_case_insensitive(monkeypatch):
@@ -645,6 +676,52 @@ def test_ratelimit_non_dict_ignored():
     out = statusline_mod.render(data)
     assert "5h:" not in out
     assert "Sonnet 4" in out
+
+
+# --- Added: rate-limit reset countdown (rate_limits.*.resets_at) ---
+
+_NOW = 1_800_000_000  # an int, like the epoch seconds Claude Code sends
+
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (30, "1m"),
+        (59 * 60 + 59, "59m"),
+        (3600, "1h0m"),
+        (2 * 3600 + 13 * 60, "2h13m"),
+        (23 * 3600 + 59 * 60, "23h59m"),
+        (86400, "1d0h"),
+        (3 * 86400 + 4 * 3600, "3d4h"),
+    ],
+)
+def test_countdown_format(seconds, expected):
+    assert statusline_mod._countdown(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    "resets_at",
+    [None, True, "1800003600", _NOW - 60, float("inf"), 10**400],
+)
+def test_reset_suffix_absent_for_unusable_values(resets_at):
+    assert statusline_mod._reset_suffix(resets_at, _NOW) == ""
+
+
+@pytest.mark.parametrize(
+    "hot_pct,color",
+    [(75, statusline_mod._BOLD_YELLOW), (92, statusline_mod._BOLD_RED)],
+)
+def test_ratelimit_countdown_only_on_hot_window(hot_pct, color):
+    """Both windows have a future reset; only the gate keeps the 40% one bare."""
+    data = {
+        "rate_limits": {
+            "five_hour": {"used_percentage": hot_pct, "resets_at": _NOW + 2 * 3600 + 13 * 60},
+            "seven_day": {"used_percentage": 40, "resets_at": _NOW + 3 * 86400},
+        }
+    }
+    reset = statusline_mod._RESET
+    expected = f" {color}5h:{hot_pct}%→2h13m{reset} {statusline_mod._DIM_WHITE}7d:40%{reset}"
+    assert statusline_mod._ratelimit_part(data, now=_NOW) == expected
 
 
 # --- Added: main() entry path via stdin ---
